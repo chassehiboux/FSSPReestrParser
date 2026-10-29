@@ -6,6 +6,12 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+
+# Вывод сборщика не должен зависеть от кодовой страницы Windows или CI.
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, 'reconfigure'):
+        stream.reconfigure(encoding='utf-8')
 
 root = Path(__file__).resolve().parent
 parser = argparse.ArgumentParser()
