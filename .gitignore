@@ -1,0 +1,12 @@
+/bin/
+/output/
+/local/
+/.tools/
+/.playwright-cli/
+__pycache__/
+*.exe
+*.zip
+*.log
+*.syso
+settings.json
+!settings.example.json

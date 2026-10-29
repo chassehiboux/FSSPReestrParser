@@ -1,0 +1,43 @@
+name: Сборка и выпуск
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Проверки
+        run: |
+          go test ./...
+          go vet ./...
+      - name: Сборка
+        env:
+          FSSP_SHARED_PATH: ${{ secrets.FSSP_SHARED_PATH }}
+          FSSP_ADMIN_SID: ${{ secrets.FSSP_ADMIN_SID }}
+        shell: pwsh
+        run: |
+          $releaseVersion = '${{ github.ref_name }}'.TrimStart('v')
+          if ('${{ github.ref_type }}' -ne 'tag') { $releaseVersion = '0.1.0-dev' }
+          python build.py --version $releaseVersion
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FSSPReestrParser-windows-amd64
+          path: |
+            bin/FSSPReestrParser-windows-amd64.exe
+            bin/checksums.txt
+      - name: Публикация релиза
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create '${{ github.ref_name }}' bin/FSSPReestrParser-windows-amd64.exe bin/checksums.txt --title '${{ github.ref_name }}' --generate-notes

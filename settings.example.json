@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "headless": true,
+  "parallel": 3,
+  "profiles": [
+    {
+      "id": "example",
+      "name": "Пример региона",
+      "bases": [{"id": "example", "name": "База", "url": "https://pyramid.example.org"}],
+      "departments": [{"base_id": "example", "id": 1, "name": "Пример департамента"}],
+      "blocks": []
+    }
+  ]
+}
