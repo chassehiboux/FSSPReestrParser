@@ -54,9 +54,9 @@ func setup(t *testing.T) Options {
 		row(" Иванов Иван Иванович", "A", 100.25, "АО"), row("Иванов Иван Иванович", "A", "100.25", "АО"), row("Иванов Иван Иванович", "A", 100.25, "ао"),
 	})
 	fixture(t, filepath.Join(exports, "Выгрузка.xlsx"), exportFields, [][]any{
-		{"ИВАНОВ ИВАН ИВАНОВИЧ", "A", 100.25, "АО", "12.12.1980"}, {"Иванов Иван Иванович", "A", 100.25, "АО", "12.12.1980"},
-		{"Петров Пётр Петрович", "B", 200, "АО", nil}, {"Сидоров Иван", "C", 300, "АО", "ошибка"},
-		{"Двойной Иван", "D", 400, "АО", "01.01.1980"}, {"Двойной Иван", "D", 400, "АО", "02.01.1980"},
+		{"ИВАНОВ ИВАН ИВАНОВИЧ", "A", 100.25, "АО", "12.12.1980", "дело"}, {"Иванов Иван Иванович", "A", 100.25, "АО", "12.12.1980", "дело"},
+		{"Петров Пётр Петрович", "B", 200, "АО", nil, "дело"}, {"Сидоров Иван", "C", 300, "АО", "ошибка", "дело"},
+		{"Двойной Иван", "D", 400, "АО", "01.01.1980", "дело"}, {"Двойной Иван", "D", 400, "АО", "02.01.1980", "дело"},
 	})
 	return Options{Source: source, Exports: exports, Month: time.September, Year: 2026}
 }
@@ -92,10 +92,13 @@ func TestStrictOutputsAndRepeatedRun(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if r.Found != 2 || r.Total != 8 {
+	if r.Found != 2 || r.Total != 8 || r.FoundByCase != 2 {
 		t.Fatalf("%+v", r)
 	}
-	counts := []int{2, 2, 6, 8}
+	counts := []int{2, 2, 6, 8, 2}
+	if len(r.Files) != len(counts) {
+		t.Fatal("нет пятого файла", r.Files)
+	}
 	for i, name := range r.Files {
 		rows := readRows(t, filepath.Join(r.Dir, name))
 		if len(rows)-1 != counts[i] {
@@ -115,7 +118,7 @@ func TestStrictOutputsAndRepeatedRun(t *testing.T) {
 		t.Fatal("не записана ДР", v)
 	}
 	f.Close()
-	for i := 1; i <= 4; i++ {
+	for i := 1; i <= len(r.Files); i++ {
 		found := false
 		for _, ev := range events {
 			if ev.Stage == i && ev.State == "Сохранён" {
@@ -210,11 +213,56 @@ func TestRealWorkbook(t *testing.T) {
 	if r.Total != 3376 || r.Found != 940 {
 		t.Fatalf("неожиданный результат %+v", r)
 	}
-	counts := []int{940, 940, 2436, 3376}
+	counts := []int{940, 940, 2436, 3376, r.FoundByCase}
+	if len(r.Files) != 5 {
+		t.Fatal("нет пятого файла")
+	}
 	for i, n := range r.Files {
 		if len(readRows(t, filepath.Join(r.Dir, n)))-1 != counts[i] {
 			t.Fatal(n)
 		}
 	}
-	t.Log("Результаты:", r.Dir)
+	t.Log("Результаты:", r.Dir, "Найдено по номеру дела:", r.FoundByCase)
+}
+
+func TestCaseNumberMatchingIsIndependent(t *testing.T) {
+	opt := setup(t)
+	row := func(fio, id, caseNumber string, amount any, party string) []any {
+		return []any{"ИП", 45000, fio, amount, party, id, caseNumber, "ОСП", 44900, 44901, 45030, nil, nil, nil}
+	}
+	fixture(t, opt.Source, SourceFields, [][]any{
+		row("Иванов Иван", "другой ИД", "К-1", 100, "АО"),
+		row("Петров Пётр", "ИД-2", "другое дело", 200, "АО"),
+		row("Двойной Иван", "нет ИД", "К-3", 300, "АО"),
+		row("Иванов Иван", "другой ИД", "К-1 ", 100, "АО"),
+		row("Иванов Иван", "другой ИД", "", 100, "АО"),
+		row("Иванов Иван", "другой ИД", "К-1", 100, "АО"),
+		row("Иванов Иван", "другой ИД", "К-1", "100", "АО"),
+		row("Иванов Иван", "другой ИД", "К-1", 100, "ао"),
+	})
+	fixture(t, filepath.Join(opt.Exports, "Выгрузка.xlsx"), exportFields, [][]any{
+		{"ИВАНОВ ИВАН", "ИД-1", 100, "АО", "01.01.1980", "К-1"},
+		{"Иванов Иван", "иной ИД", 100, "АО", "01.01.1980", "К-1"},
+		{"Петров Пётр", "ИД-2", 200, "АО", "02.01.1980", "К-2"},
+		{"Двойной Иван", "ИД-3", 300, "АО", "03.01.1980", "К-3"},
+		{"Двойной Иван", "ИД-4", 300, "АО", "04.01.1980", "К-3"},
+	})
+	r, e := Run(context.Background(), opt, nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if r.Found != 1 || r.FoundByCase != 2 {
+		t.Fatal("ключи смешаны или проигнорирован конфликт ДР", r)
+	}
+	newRows := readRows(t, filepath.Join(r.Dir, r.Files[4]))
+	oldRows := readRows(t, filepath.Join(r.Dir, r.Files[0]))
+	if len(newRows) != 3 || len(oldRows) != 2 || newRows[1][0] != "Иванов Иван" || oldRows[1][0] != "Петров Пётр" {
+		t.Fatal("неверный состав файлов")
+	}
+	if !reflect.DeepEqual(newRows[0], oldRows[0]) || !strings.Contains(newRows[1][5], "1980") {
+		t.Fatal("изменён шаблон или отсутствует ДР")
+	}
+	if newRows[1][8] != "другой ИД" {
+		t.Fatal("номер ИД исходника заменён значением кандидата")
+	}
 }

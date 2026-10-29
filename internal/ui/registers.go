@@ -161,9 +161,10 @@ func (a *App) startRegisters() {
 				if e.Stage == 0 && e.Total > 0 {
 					progress = e.Checked * 60 / e.Total
 				} else if e.Stage > 0 {
-					progress = 60 + (e.Stage-1)*10
+					steps := len(registry.StageNames) - 1
+					progress = 60 + (e.Stage-1)*40/steps
 					if e.State == "Сохранён" {
-						progress = 60 + e.Stage*10
+						progress = 60 + e.Stage*40/steps
 					}
 				}
 				op.progress.SetValue(max(op.progress.Value(), progress))
@@ -195,7 +196,7 @@ func (a *App) startRegisters() {
 			} else {
 				a.registerOutput = result.Dir
 				op.progress.SetValue(100)
-				message := fmt.Sprintf("Сохранено 4 файла. Проверено %d/%d, Найдено д.р. %d. Без д.р. %d.", result.Total, result.Total, result.Found, result.Total-result.Found)
+				message := fmt.Sprintf("Сохранено файлов: %d. Проверено %d/%d. Д.р. по ИД: %d, по делу: %d. Без д.р. по ИД: %d.", len(result.Files), result.Total, result.Total, result.Found, result.FoundByCase, result.Total-result.Found)
 				op.status.SetText(message)
 				a.status.SetText("Реестры созданы")
 				a.notify("Реестры созданы", message)

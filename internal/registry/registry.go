@@ -22,13 +22,14 @@ var initiation []byte
 var termination []byte
 
 var SourceFields = []string{"Регистрационный номер ИП", "Дата возбуждения", "Должник", "Сумма долга", "Взыскатель", "Номер ИД", "Номер дела", "Подразделение ОСП", "Дата вступления решения в законную силу", "Дата выдачи ИД", "Дата завершения ИП", "Подпункт", "Пункт", "Статья"}
-var exportFields = []string{"ФИО", "Номер ИД", "Переданная на принудительное исполнение сумма", "Взыскатель", "д.р."}
+var exportFields = []string{"ФИО", "Номер ИД", "Переданная на принудительное исполнение сумма", "Взыскатель", "д.р.", "Номер дела"}
 var StageNames = []string{
 	"Сверка исходного файла с выгрузкой ОВЗИД",
 	"Создание реестра возбуждения по строкам с найденной д.р.",
 	"Создание реестра окончания по строкам с найденной д.р.",
 	"Создание реестра окончания по строкам без д.р.",
 	"Создание реестра аналитики по всем строкам исходного файла",
+	"Создание реестра возбуждения с д.р. по номеру дела",
 }
 
 type Options struct {
@@ -40,21 +41,56 @@ type Event struct {
 	Stage                 int
 	State, Detail         string
 	Checked, Total, Found int
+	FoundByCase           int
 }
 type Result struct {
 	Dir          string
 	Total, Found int
+	FoundByCase  int
 	Files        []string
 }
 type record struct {
-	Values   []value
-	Birthday time.Time
-	Status   string
+	Values       []value
+	Birthday     time.Time
+	CaseBirthday time.Time
+	Status       string
 }
 type key [4]value
 type birthInfo struct {
 	Dates            map[string]time.Time
 	Missing, Invalid bool
+}
+
+func (b *birthInfo) add(v value, date1904 bool) {
+	if v.empty() {
+		b.Missing = true
+	} else if t, valid := birthday(v, date1904); valid {
+		b.Dates[t.Format("2006-01-02")] = t
+	} else {
+		b.Invalid = true
+	}
+}
+func resolveBirth(k key, valid bool, index map[key]*birthInfo) (time.Time, string) {
+	if !valid {
+		return time.Time{}, "Не заполнены поля ключа"
+	}
+	info := index[k]
+	if info == nil {
+		return time.Time{}, "Точное совпадение не найдено"
+	}
+	switch {
+	case len(info.Dates) > 1:
+		return time.Time{}, "Полностью совпало; найдены разные д.р."
+	case info.Invalid:
+		return time.Time{}, "Полностью совпало; некорректная д.р. в выгрузке"
+	case len(info.Dates) == 1:
+		for _, t := range info.Dates {
+			return t, "Полностью совпало"
+		}
+	case info.Missing:
+		return time.Time{}, "Полностью совпало; д.р. отсутствует"
+	}
+	return time.Time{}, "Точное совпадение не найдено"
 }
 
 func makeKey(row []value, cols map[string]int, names []string) (key, bool) {
@@ -95,7 +131,7 @@ func Names(month time.Month, year int) ([]string, error) {
 		return nil, fmt.Errorf("выберите корректные месяц и год")
 	}
 	prefix := []string{"Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"}[month-1] + fmt.Sprintf("%02d", year%100) + "_"
-	return []string{prefix + "Возб_Изв_Отк_С_ДР.xlsx", prefix + "Окон_Изв_Отказы_С_ДР.xlsx", prefix + "Окон_Изв_Отк_БЕЗ_ДР.xlsx", prefix + "Аналитика.xlsx"}, nil
+	return []string{prefix + "Возб_Изв_Отк_С_ДР.xlsx", prefix + "Окон_Изв_Отказы_С_ДР.xlsx", prefix + "Окон_Изв_Отк_БЕЗ_ДР.xlsx", prefix + "Аналитика.xlsx", prefix + "Возб_С_ДР_по_делу.xlsx"}, nil
 }
 func reserve(parent string, names []string) (string, error) {
 	for i := 0; ; i++ {
@@ -127,7 +163,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 	stage := 0
 	send := func(state, detail string, checked, total, found int) {
 		if emit != nil {
-			emit(Event{Stage: stage, State: state, Detail: detail, Checked: checked, Total: total, Found: found})
+			emit(Event{Stage: stage, State: state, Detail: detail, Checked: checked, Total: total, Found: found, FoundByCase: result.FoundByCase})
 		}
 	}
 	defer func() {
@@ -172,7 +208,10 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 	var sourceCols map[string]int
 	rows := []record{}
 	wanted := map[key]*birthInfo{}
+	wantedByCase := map[key]*birthInfo{}
 	sourceKeys := []string{"Должник", "Номер ИД", "Сумма долга", "Взыскатель"}
+	sourceCaseKeys := []string{"Должник", "Номер дела", "Сумма долга", "Взыскатель"}
+	exportCaseKeys := []string{"ФИО", "Номер дела", "Переданная на принудительное исполнение сумма", "Взыскатель"}
 	err = scanBook(ctx, sourcePath, func(_ int, row []value, date1904 bool) error {
 		if sourceCols == nil {
 			var e error
@@ -209,6 +248,9 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 			if wanted[k] == nil {
 				wanted[k] = &birthInfo{Dates: map[string]time.Time{}}
 			}
+		}
+		if k, ok := makeKey(row, sourceCols, sourceCaseKeys); ok && wantedByCase[k] == nil {
+			wantedByCase[k] = &birthInfo{Dates: map[string]time.Time{}}
 		}
 		return nil
 	})
@@ -248,18 +290,12 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 				cols, e = headers(row, exportFields)
 				return e
 			}
-			k, ok := makeKey(row, cols, exportFields[:4])
-			if !ok || wanted[k] == nil {
-				return nil
-			}
-			info := wanted[k]
 			v := at(row, cols["д.р."])
-			if v.empty() {
-				info.Missing = true
-			} else if t, valid := birthday(v, date1904); valid {
-				info.Dates[t.Format("2006-01-02")] = t
-			} else {
-				info.Invalid = true
+			if k, ok := makeKey(row, cols, exportFields[:4]); ok && wanted[k] != nil {
+				wanted[k].add(v, date1904)
+			}
+			if k, ok := makeKey(row, cols, exportCaseKeys); ok && wantedByCase[k] != nil {
+				wantedByCase[k].add(v, date1904)
 			}
 			return nil
 		})
@@ -283,43 +319,37 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 		}
 		r := &rows[i]
 		k, ok := makeKey(r.Values, sourceCols, sourceKeys)
-		r.Status = "Точное совпадение не найдено"
-		if !ok {
-			r.Status = "Не заполнены поля ключа"
-		} else if info := wanted[k]; info != nil {
-			switch {
-			case len(info.Dates) > 1:
-				r.Status = "Полностью совпало; найдены разные д.р."
-			case info.Invalid:
-				r.Status = "Полностью совпало; некорректная д.р. в выгрузке"
-			case len(info.Dates) == 1:
-				for _, t := range info.Dates {
-					r.Birthday = t
-				}
-				r.Status = "Полностью совпало"
-				result.Found++
-			case info.Missing:
-				r.Status = "Полностью совпало; д.р. отсутствует"
-			}
+		r.Birthday, r.Status = resolveBirth(k, ok, wanted)
+		if !r.Birthday.IsZero() {
+			result.Found++
+		}
+		ck, cok := makeKey(r.Values, sourceCols, sourceCaseKeys)
+		r.CaseBirthday, _ = resolveBirth(ck, cok, wantedByCase)
+		if !r.CaseBirthday.IsZero() {
+			result.FoundByCase++
 		}
 		if i%100 == 0 || i+1 == len(rows) {
-			send("Выполняется", fmt.Sprintf("Проверено %d/%d, Найдено д.р. %d", i+1, len(rows), result.Found), i+1, len(rows), result.Found)
+			send("Выполняется", fmt.Sprintf("Проверено %d/%d, Найдено д.р.: по ИД %d, по делу %d", i+1, len(rows), result.Found, result.FoundByCase), i+1, len(rows), result.Found)
 		}
 	}
-	send("Готово", fmt.Sprintf("Проверено %d/%d, Найдено д.р. %d", len(rows), len(rows), result.Found), len(rows), len(rows), result.Found)
+	send("Готово", fmt.Sprintf("Проверено %d/%d, Найдено д.р.: по ИД %d, по делу %d", len(rows), len(rows), result.Found, result.FoundByCase), len(rows), len(rows), result.Found)
 	// Полный комплект готовится вне папки результата: в ней не бывает частично записанных XLSX.
 	tmp, err := os.MkdirTemp("", "fssp-registers-")
 	if err != nil {
 		return result, err
 	}
 	defer os.RemoveAll(tmp)
-	for i := 0; i < 4; i++ {
+	for i := range names {
 		stage = i + 1
 		send("Выполняется", "Формирование файла…", 0, len(rows), result.Found)
 		if err = writeBook(ctx, filepath.Join(tmp, names[i]), i, sourceHeaders, sourceCols, rows); err != nil {
 			return result, err
 		}
-		send("Подготовлен", "Файл сформирован; ожидает сохранения комплекта", 0, len(rows), result.Found)
+		detail := "Файл сформирован; ожидает сохранения комплекта"
+		if i == 4 {
+			detail = fmt.Sprintf("Найдено д.р. по номеру дела: %d; ожидает сохранения комплекта", result.FoundByCase)
+		}
+		send("Подготовлен", detail, 0, len(rows), result.Found)
 	}
 	for _, name := range names {
 		if err = ctx.Err(); err != nil {
@@ -335,7 +365,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 	result.Dir = dir
 	result.Files = names
 	success = true
-	for i := 1; i < 5; i++ {
+	for i := 1; i <= len(names); i++ {
 		stage = i
 		send("Сохранён", names[i-1], len(rows), len(rows), result.Found)
 	}
@@ -345,7 +375,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 func writeBook(ctx context.Context, dest string, kind int, sourceHeaders []value, cols map[string]int, rows []record) error {
 	var f *excelize.File
 	var err error
-	if kind == 0 {
+	if kind == 0 || kind == 4 {
 		f, err = excelize.OpenReader(bytes.NewReader(initiation))
 	} else if kind < 3 {
 		f, err = excelize.OpenReader(bytes.NewReader(termination))
@@ -358,7 +388,7 @@ func writeBook(ctx context.Context, dest string, kind int, sourceHeaders []value
 	defer f.Close()
 	sheet := f.GetSheetList()[0]
 	outHeaders := []string{}
-	if kind < 3 {
+	if kind != 3 {
 		h, err := f.GetRows(sheet)
 		if err != nil {
 			return err
@@ -405,7 +435,7 @@ func writeBook(ctx context.Context, dest string, kind int, sourceHeaders []value
 	styles := make([]int, len(outHeaders))
 	dateFormat := "dd.mm.yyyy"
 	for i, h := range outHeaders {
-		if kind < 3 {
+		if kind != 3 {
 			cell, _ := excelize.CoordinatesToCellName(i+1, 2)
 			styles[i], err = f.GetCellStyle(sheet, cell)
 		} else if strings.HasPrefix(h, "Дата ") || h == "д.р." {
@@ -422,14 +452,18 @@ func writeBook(ctx context.Context, dest string, kind int, sourceHeaders []value
 		if err = ctx.Err(); err != nil {
 			return err
 		}
-		if kind < 2 && r.Birthday.IsZero() || kind == 2 && !r.Birthday.IsZero() {
+		birth := r.Birthday
+		if kind == 4 {
+			birth = r.CaseBirthday
+		}
+		if (kind < 2 || kind == 4) && birth.IsZero() || kind == 2 && !birth.IsZero() {
 			continue
 		}
 		for c, h := range outHeaders {
 			var v any
 			if h == "Д.р. должника" || kind == 3 && c == len(outHeaders)-2 {
-				if !r.Birthday.IsZero() {
-					v = r.Birthday
+				if !birth.IsZero() {
+					v = birth
 				}
 			} else if kind == 3 && c == len(outHeaders)-1 {
 				v = r.Status
