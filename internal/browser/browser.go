@@ -29,10 +29,23 @@ type Credentials struct {
 }
 type Prompt func(context.Context, string, string) (Credentials, error)
 type session struct {
-	browser *rod.Browser
-	temp    string
-	mu      sync.Mutex
+	browser  *rod.Browser
+	temp     string
+	mu       sync.Mutex
+	prepared *rod.Page
 }
+
+// takePage вызывается под s.mu: подготовленная вкладка передаётся ровно одному заданию.
+func (s *session) takePage(ctx context.Context, base model.Base) (*rod.Page, bool, error) {
+	if s.prepared != nil {
+		p := s.prepared.Context(ctx)
+		s.prepared = nil
+		return p, true, nil
+	}
+	p, err := s.browser.Context(ctx).Page(proto.TargetCreateTarget{URL: strings.TrimRight(base.URL, "/") + "/ovzid/status/all"})
+	return p, false, err
+}
+
 type Engine struct {
 	browser             *rod.Browser
 	launch              *launcher.Launcher
@@ -327,11 +340,15 @@ func (e *Engine) getSession(ctx context.Context, j model.Job) (*session, error) 
 			return nil, err
 		}
 	}
-	p, err := b.Context(ctx).Page(proto.TargetCreateTarget{URL: strings.TrimRight(j.Base.URL, "/") + "/ovzid/status/all"})
+	p, err := b.Context(ctx).Page(proto.TargetCreateTarget{URL: "about:blank"})
 	if err != nil {
 		return nil, err
 	}
-	defer p.Close()
+	// Сначала выбираем департамент. Загрузка общей формы до этого создаёт лишний запрос таблицы,
+	// который следующий переход может оборвать и показать как ошибку на экране.
+	if err = p.Navigate(fmt.Sprintf("%s/login/department/%d/ovzid/status/all", strings.TrimRight(j.Base.URL, "/"), j.Department.ID)); err != nil {
+		return nil, err
+	}
 	if err = waitDOM(p); err != nil {
 		return nil, err
 	}
@@ -341,34 +358,32 @@ func (e *Engine) getSession(ctx context.Context, j model.Job) (*session, error) 
 	if err != nil {
 		return nil, err
 	}
-	// Выбранный департамент хранится в сессии сервера; контексты и прикладные cookies изолированы.
-	var href string
-	err = read(p.Timeout(20*time.Second), `id => {const a=document.querySelector('a[data-depid="'+id+'"]');return a?.href||''}`, &href, j.Department.ID)
-	if err != nil {
-		return nil, err
-	}
-	if href == "" {
-		return nil, fmt.Errorf("Нет доступа к департаменту %s", j.Department.Name)
-	}
-	if err = p.Navigate(href); err != nil {
-		return nil, err
-	}
-	if err = waitDOM(p); err != nil {
-		return nil, err
-	}
-	if err = p.Navigate(strings.TrimRight(j.Base.URL, "/") + "/ovzid/status/all"); err != nil {
-		return nil, err
-	}
-	if err = waitDOM(p); err != nil {
-		return nil, err
-	}
+	// После SSO сервис может вернуть департамент по умолчанию. Только тогда переключаемся.
 	var selected string
 	err = read(p, `() => document.querySelector('ul.dropdown-menu-sub a[data-depid].active,ul.dropdown-menu-sub li.active a[data-depid]')?.getAttribute('data-depid')||document.querySelector('button.btn-cities')?.getAttribute('data-depid')||''`, &selected)
 	if err != nil {
 		return nil, err
 	}
 	if selected != fmt.Sprint(j.Department.ID) {
-		return nil, fmt.Errorf("Не подтверждён департамент %s (получен %s)", j.Department.Name, selected)
+		var href string
+		if err = read(p, `id => document.querySelector('a[data-depid="'+id+'"]')?.href||''`, &href, j.Department.ID); err != nil {
+			return nil, err
+		}
+		if href == "" {
+			return nil, fmt.Errorf("Нет доступа к департаменту %s", j.Department.Name)
+		}
+		if err = p.Navigate(href); err != nil {
+			return nil, err
+		}
+		if err = waitDOM(p); err != nil {
+			return nil, err
+		}
+		if err = read(p, `() => document.querySelector('ul.dropdown-menu-sub a[data-depid].active,ul.dropdown-menu-sub li.active a[data-depid]')?.getAttribute('data-depid')||document.querySelector('button.btn-cities')?.getAttribute('data-depid')||''`, &selected); err != nil {
+			return nil, err
+		}
+		if selected != fmt.Sprint(j.Department.ID) {
+			return nil, fmt.Errorf("Не подтверждён департамент %s (получен %s)", j.Department.Name, selected)
+		}
 	}
 	if err = waitGrid(p, false); err != nil {
 		return nil, err
@@ -399,7 +414,7 @@ func (e *Engine) getSession(ctx context.Context, j model.Job) (*session, error) 
 	if err = (proto.BrowserSetDownloadBehavior{Behavior: proto.BrowserSetDownloadBehaviorBehaviorAllowAndName, BrowserContextID: b.BrowserContextID, DownloadPath: temp, EventsEnabled: true}).Call(b); err != nil {
 		return nil, err
 	}
-	s := &session{browser: b, temp: temp}
+	s := &session{browser: b, temp: temp, prepared: p}
 	e.sessions[key] = s
 	ok = true
 	return s, nil
@@ -439,7 +454,7 @@ func (e *Engine) Begin(ctx context.Context, j model.Job) (*queue.Pending, error)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	p, err := s.browser.Context(ctx).Page(proto.TargetCreateTarget{URL: strings.TrimRight(j.Base.URL, "/") + "/ovzid/status/all"})
+	p, prepared, err := s.takePage(ctx, j.Base)
 	if err != nil {
 		return nil, err
 	}
@@ -448,37 +463,39 @@ func (e *Engine) Begin(ctx context.Context, j model.Job) (*queue.Pending, error)
 	var once sync.Once
 	closePage := func() { once.Do(func() { cancel(); p.Context(context.Background()).Timeout(5 * time.Second).Close() }) }
 	fail := func(err error) (*queue.Pending, error) { closePage(); return nil, err }
-	if err = waitDOM(p); err != nil {
-		return fail(err)
-	}
-	e.authMu.Lock()
-	err = e.ensureLogin(ctx, p, j.Base)
-	e.authMu.Unlock()
-	if err != nil {
-		return fail(err)
-	}
-	var actualDepartment string
-	err = read(p, `() => document.querySelector('ul.dropdown-menu-sub a[data-depid].active,ul.dropdown-menu-sub li.active a[data-depid]')?.getAttribute('data-depid')||document.querySelector('button.btn-cities')?.getAttribute('data-depid')||''`, &actualDepartment)
-	if err != nil {
-		return fail(err)
-	}
-	if actualDepartment != fmt.Sprint(j.Department.ID) {
-		var href string
-		if err = read(p, `id => document.querySelector('a[data-depid="'+id+'"]')?.href||''`, &href, j.Department.ID); err != nil || href == "" {
-			return fail(fmt.Errorf("Не удалось выбрать департамент %s", j.Department.Name))
-		}
-		if err = p.Navigate(href); err != nil {
-			return fail(err)
-		}
+	if !prepared {
 		if err = waitDOM(p); err != nil {
 			return fail(err)
 		}
-		if err = read(p, `() => document.querySelector('ul.dropdown-menu-sub a[data-depid].active,ul.dropdown-menu-sub li.active a[data-depid]')?.getAttribute('data-depid')||document.querySelector('button.btn-cities')?.getAttribute('data-depid')||''`, &actualDepartment); err != nil || actualDepartment != fmt.Sprint(j.Department.ID) {
-			return fail(fmt.Errorf("Не подтверждён департамент %s", j.Department.Name))
+		e.authMu.Lock()
+		err = e.ensureLogin(ctx, p, j.Base)
+		e.authMu.Unlock()
+		if err != nil {
+			return fail(err)
 		}
-	}
-	if err = waitGrid(p, false); err != nil {
-		return fail(fmt.Errorf("Таблица не загрузилась: %w", err))
+		var actualDepartment string
+		err = read(p, `() => document.querySelector('ul.dropdown-menu-sub a[data-depid].active,ul.dropdown-menu-sub li.active a[data-depid]')?.getAttribute('data-depid')||document.querySelector('button.btn-cities')?.getAttribute('data-depid')||''`, &actualDepartment)
+		if err != nil {
+			return fail(err)
+		}
+		if actualDepartment != fmt.Sprint(j.Department.ID) {
+			var href string
+			if err = read(p, `id => document.querySelector('a[data-depid="'+id+'"]')?.href||''`, &href, j.Department.ID); err != nil || href == "" {
+				return fail(fmt.Errorf("Не удалось выбрать департамент %s", j.Department.Name))
+			}
+			if err = p.Navigate(href); err != nil {
+				return fail(err)
+			}
+			if err = waitDOM(p); err != nil {
+				return fail(err)
+			}
+			if err = read(p, `() => document.querySelector('ul.dropdown-menu-sub a[data-depid].active,ul.dropdown-menu-sub li.active a[data-depid]')?.getAttribute('data-depid')||document.querySelector('button.btn-cities')?.getAttribute('data-depid')||''`, &actualDepartment); err != nil || actualDepartment != fmt.Sprint(j.Department.ID) {
+				return fail(fmt.Errorf("Не подтверждён департамент %s", j.Department.Name))
+			}
+		}
+		if err = waitGrid(p, false); err != nil {
+			return fail(fmt.Errorf("Таблица не загрузилась: %w", err))
+		}
 	}
 	fields, err := collect(p)
 	if err != nil {

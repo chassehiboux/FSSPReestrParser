@@ -3,6 +3,7 @@ package queue
 import (
 	"archive/zip"
 	"context"
+	"fmt"
 	"github.com/chassehiboux/FSSPReestrParser/internal/model"
 	"os"
 	"path/filepath"
@@ -70,6 +71,45 @@ func TestQueueKeepsSlotsUntilSaveAndCancels(t *testing.T) {
 	}
 	if len(terminal) != 5 || f.max != 3 {
 		t.Fatalf("terminal=%v max=%d", terminal, f.max)
+	}
+}
+
+func TestTwentyActiveJobsKeepSlotsUntilSave(t *testing.T) {
+	f := &fake{started: make(chan string, 25), release: make(chan struct{})}
+	jobs := make([]model.Job, 25)
+	for i := range jobs {
+		jobs[i].ID = fmt.Sprint(i)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { Run(ctx, jobs, 20, f, func(Event) {}); close(done) }()
+	for i := 0; i < 20; i++ {
+		select {
+		case <-f.started:
+		case <-time.After(3 * time.Second):
+			t.Fatal("не запущены 20 заданий")
+		}
+	}
+	select {
+	case <-f.started:
+		t.Fatal("21-е задание заняло несвободный слот")
+	default:
+	}
+	f.release <- struct{}{}
+	select {
+	case <-f.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("после сохранения не освободился слот")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("отмена зависла")
+	}
+	if f.max != 20 || f.active != 0 {
+		t.Fatalf("максимум=%d осталось=%d", f.max, f.active)
 	}
 }
 func TestSaveRejectsHTMLAndNeverOverwrites(t *testing.T) {

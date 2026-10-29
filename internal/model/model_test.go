@@ -11,6 +11,19 @@ import (
 func sample() Profile {
 	return Profile{ID: "kgn", Name: "Курган", Bases: []Base{{ID: "base", URL: "https://example.test"}}, Departments: []Department{{BaseID: "base", ID: 39, Name: "Курган"}, {BaseID: "base", ID: 43, Name: "Курган-Восточный"}, {BaseID: "base", ID: 40, Name: "Шадринск"}}}
 }
+
+func TestParallelLimit(t *testing.T) {
+	s := Settings{Schema: 1, Parallel: 20, Profiles: []Profile{sample()}}
+	if err := s.Validate(); err != nil {
+		t.Fatal("20 активных заданий должны быть разрешены", err)
+	}
+	for _, n := range []int{0, 21} {
+		s.Parallel = n
+		if s.Validate() == nil {
+			t.Fatal("пропущен недопустимый лимит", n)
+		}
+	}
+}
 func TestPrimaryAndBlocks(t *testing.T) {
 	p := sample()
 	jobs, e := BuildJobs(p)

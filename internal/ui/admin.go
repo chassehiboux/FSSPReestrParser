@@ -92,7 +92,7 @@ func (a *App) openAdmin() {
 		Label{Text: "Общие настройки выгрузки", Font: Font{Family: "Segoe UI", PointSize: 15, Bold: true}}, Label{Text: "Изменения применятся у всех перед следующей выгрузкой. Основной блок всегда включён."},
 		ComboBox{AssignTo: &profile, Model: profileNames, OnCurrentIndexChanged: repaint},
 		CheckBox{AssignTo: &headless, Text: "Скрывать браузер (headless)", Checked: working.Headless},
-		Composite{Layout: HBox{}, Children: []Widget{Label{Text: "Одновременно активных заданий:"}, NumberEdit{AssignTo: &parallel, Value: float64(working.Parallel), MinValue: 1, MaxValue: 12, Decimals: 0}, HSpacer{}}},
+		Composite{Layout: HBox{}, Children: []Widget{Label{Text: "Одновременно активных заданий (1–20):"}, NumberEdit{AssignTo: &parallel, Value: float64(working.Parallel), MinValue: 1, MaxValue: float64(model.MaxParallel), Decimals: 0, MinSize: Size{Width: 100}}, HSpacer{}}},
 		GroupBox{Title: "Основной блок — всегда включён", Layout: VBox{}, Children: []Widget{Label{Text: strings.Join(model.Statuses, "\n")}}},
 		Label{AssignTo: &cacheNote, Text: "Проверка общего кэша полей…"},
 		Label{Text: "Дополнительные блоки"}, ListBox{AssignTo: &blocks, OnItemActivated: func() { edit(false) }},

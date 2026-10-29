@@ -79,13 +79,18 @@ type Job struct {
 
 var Statuses = []string{"Направлены на исполнение (нет возбуждения)", "В исполнении (возбуждены ИП)", "ИД возвращенные из ФССП", "Подготовка ИД к возврату в ПУ"}
 
+const MaxParallel = 20
+
 func Scope(d Department) string { return fmt.Sprintf("%s:%d", d.BaseID, d.ID) }
 func Primary() Block {
 	return Block{ID: "primary", Name: "Основной блок", Enabled: true, Rows: []Row{{Key: "CaseStatusName", Values: append([]string(nil), Statuses...)}}}
 }
 func (s Settings) Validate() error {
-	if s.Schema != 1 || s.Revision < 0 || s.Parallel < 1 || s.Parallel > 12 || len(s.Profiles) == 0 {
+	if s.Schema != 1 || s.Revision < 0 || len(s.Profiles) == 0 {
 		return fmt.Errorf("Некорректная схема, версия, параллельность или список регионов")
+	}
+	if s.Parallel < 1 || s.Parallel > MaxParallel {
+		return fmt.Errorf("Число одновременно активных заданий должно быть от 1 до %d", MaxParallel)
 	}
 	profiles := map[string]bool{}
 	for _, p := range s.Profiles {
