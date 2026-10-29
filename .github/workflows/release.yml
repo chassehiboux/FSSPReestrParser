@@ -25,6 +25,7 @@ jobs:
         env:
           FSSP_SHARED_PATH: ${{ secrets.FSSP_SHARED_PATH }}
           FSSP_ADMIN_SID: ${{ secrets.FSSP_ADMIN_SID }}
+          FSSP_REGISTRY_SOURCE_ROOT: ${{ secrets.FSSP_REGISTRY_SOURCE_ROOT }}
         shell: pwsh
         run: |
           $releaseVersion = '${{ github.ref_name }}'.TrimStart('v')

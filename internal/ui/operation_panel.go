@@ -2,6 +2,7 @@ package ui
 
 import (
 	"github.com/chassehiboux/FSSPReestrParser/internal/queue"
+	"github.com/chassehiboux/FSSPReestrParser/internal/registry"
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
 )
@@ -25,11 +26,47 @@ func appIcon() any {
 	}
 	return icon
 }
-func newOperation(a *App, title string, withTable bool, openFolder func()) (*operation, error) {
+func newOperation(a *App, title string, withTable bool, openFolder func(), stages ...bool) (*operation, error) {
 	op := &operation{model: &statusModel{events: map[string]queue.Event{}}, withTable: withTable}
+	stageTable := len(stages) > 0 && stages[0]
+	if stageTable {
+		for i := range registry.StageNames {
+			op.model.stages = append(op.model.stages, registry.Event{Stage: i, State: "Ожидание"})
+		}
+	}
 	children := []Widget{Label{Text: title, Font: Font{Family: "Segoe UI", PointSize: 14, Bold: true}}, Label{AssignTo: &op.status, Text: "Подготовка…"}, ProgressBar{AssignTo: &op.progress, MaxValue: 100}}
 	if withTable {
-		children = append(children, TableView{AssignTo: &op.table, Model: op.model, MinSize: Size{Width: 900, Height: 300}, AlternatingRowBG: true, LastColumnStretched: true, ColumnsSizable: true, StyleCell: func(style *walk.CellStyle) {
+		tableHeight := 300
+		if stageTable {
+			tableHeight = 180
+		}
+		columns := []TableViewColumn{{Title: "№", Width: 40}, {Title: "Департамент", Width: 160}, {Title: "Условия", Width: 360}, {Title: "Состояние", Width: 130}, {Title: "Подробности", Width: 300}}
+		if stageTable {
+			columns = []TableViewColumn{{Title: "№", Width: 35}, {Title: "Этап", Width: 500}, {Title: "Состояние", Width: 120}, {Title: "Подробности", Width: 340}}
+		}
+		children = append(children, TableView{AssignTo: &op.table, Model: op.model, MinSize: Size{Width: 900, Height: tableHeight}, AlternatingRowBG: true, LastColumnStretched: true, ColumnsSizable: true, StyleCell: func(style *walk.CellStyle) {
+			if stageTable {
+				if style.Col() == 2 && style.Row() >= 0 && style.Row() < len(op.model.stages) {
+					switch op.model.stages[style.Row()].State {
+					case "Готово", "Сохранён":
+						style.BackgroundColor = walk.RGB(208, 239, 218)
+						style.TextColor = walk.RGB(24, 89, 45)
+					case "Ошибка":
+						style.BackgroundColor = walk.RGB(252, 218, 218)
+						style.TextColor = walk.RGB(151, 28, 28)
+					case "Выполняется":
+						style.BackgroundColor = walk.RGB(255, 240, 187)
+						style.TextColor = walk.RGB(114, 79, 0)
+					case "Подготовлен":
+						style.BackgroundColor = walk.RGB(207, 232, 255)
+						style.TextColor = walk.RGB(20, 76, 130)
+					default:
+						style.BackgroundColor = walk.RGB(238, 238, 238)
+						style.TextColor = walk.RGB(100, 100, 100)
+					}
+				}
+				return
+			}
 			if style.Col() != 3 || style.Row() < 0 || style.Row() >= len(op.model.jobs) {
 				return
 			}
@@ -60,7 +97,7 @@ func newOperation(a *App, title string, withTable bool, openFolder func()) (*ope
 				style.BackgroundColor = walk.RGB(246, 247, 249)
 				style.TextColor = walk.RGB(75, 82, 90)
 			}
-		}, Columns: []TableViewColumn{{Title: "№", Width: 40}, {Title: "Департамент", Width: 160}, {Title: "Условия", Width: 360}, {Title: "Состояние", Width: 130}, {Title: "Подробности", Width: 300}}})
+		}, Columns: columns})
 	}
 	buttons := []Widget{PushButton{AssignTo: &op.stop, Text: "Остановить", Enabled: false, Visible: withTable, OnClicked: func() {
 		if op.cancel != nil {
@@ -91,6 +128,9 @@ func (a *App) showOperation(op *operation) {
 	if op.withTable {
 		height = 820
 		width = 1180
+		if op.model.stages != nil {
+			height = 660
+		}
 	}
 	a.window.SetSize(walk.Size{Width: width, Height: height})
 }

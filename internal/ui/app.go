@@ -14,6 +14,7 @@ import (
 	"github.com/chassehiboux/FSSPReestrParser/internal/model"
 	"github.com/chassehiboux/FSSPReestrParser/internal/platform"
 	"github.com/chassehiboux/FSSPReestrParser/internal/queue"
+	"github.com/chassehiboux/FSSPReestrParser/internal/registry"
 	"github.com/chassehiboux/FSSPReestrParser/internal/settings"
 	"github.com/chassehiboux/FSSPReestrParser/internal/update"
 	"github.com/lxn/walk"
@@ -24,10 +25,30 @@ type statusModel struct {
 	walk.TableModelBase
 	jobs   []model.Job
 	events map[string]queue.Event
+	stages []registry.Event
 }
 
-func (m *statusModel) RowCount() int { return len(m.jobs) }
+func (m *statusModel) RowCount() int {
+	if m.stages != nil {
+		return len(m.stages)
+	}
+	return len(m.jobs)
+}
 func (m *statusModel) Value(row, col int) any {
+	if m.stages != nil {
+		e := m.stages[row]
+		switch col {
+		case 0:
+			return row + 1
+		case 1:
+			return registry.StageNames[row]
+		case 2:
+			return e.State
+		case 3:
+			return e.Detail
+		}
+		return ""
+	}
 	j := m.jobs[row]
 	ev := m.events[j.ID]
 	switch col {
@@ -80,10 +101,13 @@ type App struct {
 	updating           bool
 	lifecycle          context.Context
 	lifecycleCancel    context.CancelFunc
+	registerButton     *walk.PushButton
+	registerOutput     string
+	initializing       bool
 }
 
 func Run(store *settings.Store, local, ready string, skipUpdate bool) error {
-	a := &App{store: store, local: local, skipUpdate: skipUpdate, ready: ready}
+	a := &App{store: store, local: local, skipUpdate: skipUpdate, ready: ready, initializing: true}
 	a.lifecycle, a.lifecycleCancel = context.WithCancel(context.Background())
 	defer a.lifecycleCancel()
 	err := (MainWindow{AssignTo: &a.window, Title: "Реестры ФССП", Icon: appIcon(), MinSize: Size{Width: 640, Height: 330}, Size: Size{Width: 720, Height: 360}, Font: Font{Family: "Segoe UI", PointSize: 10}, Layout: VBox{Margins: Margins{Left: 24, Top: 20, Right: 24, Bottom: 20}, Spacing: 14}, Children: []Widget{
@@ -91,16 +115,7 @@ func Run(store *settings.Store, local, ready string, skipUpdate bool) error {
 		Label{Text: "Выгрузите данные ОВЗИД для подготовки реестров по извещениям."},
 		ComboBox{AssignTo: &a.profiles, Visible: false},
 		PushButton{AssignTo: &a.start, Text: "Выгрузить ОВЗИД", Enabled: false, MinSize: Size{Width: 300, Height: 44}, OnClicked: a.startExport},
-		PushButton{Text: "Создать реестры возбуждения и окончания", MinSize: Size{Width: 300, Height: 44}, OnClicked: func() {
-			op, err := newOperation(a, "Создание реестров возбуждения и окончания", false, nil)
-			if err != nil {
-				a.error(err)
-				return
-			}
-			op.status.SetText("Функция пока недоступна. Сейчас можно выгрузить ОВЗИД.")
-			op.progress.SetVisible(false)
-			op.stop.SetVisible(false)
-		}},
+		PushButton{AssignTo: &a.registerButton, Text: "Создать реестры возбуждения и окончания", Enabled: false, MinSize: Size{Width: 300, Height: 44}, OnClicked: a.startRegisters},
 		Label{AssignTo: &a.status, Text: "Проверка обновлений…"},
 		Composite{AssignTo: &a.host, Visible: false, StretchFactor: 1, Layout: VBox{}},
 		Composite{Layout: HBox{}, Children: []Widget{PushButton{AssignTo: &a.admin, Text: "Администрирование", Visible: platform.IsAdmin(), Enabled: false, OnClicked: a.openAdmin}, PushButton{AssignTo: &a.updateButton, Text: "Обновить", Visible: false, OnClicked: a.runPendingUpdate}, HSpacer{}, Label{Text: "Версия " + update.Version}}},
@@ -153,11 +168,12 @@ func (a *App) error(e error) {
 	walk.MsgBox(a.window, "Не удалось выполнить операцию", e.Error(), walk.MsgBoxIconError)
 }
 func (a *App) enable() {
-	a.start.SetEnabled(len(a.cfg.Profiles) > 0 && !a.updating)
+	a.start.SetEnabled(len(a.cfg.Profiles) > 0 && !a.updating && (!a.running || a.export != nil && a.export.running))
+	a.registerButton.SetEnabled(!a.initializing && !a.updating && (!a.running || a.register != nil && a.register.running))
 	a.admin.SetEnabled(platform.IsAdmin() && len(a.cfg.Profiles) > 0 && !a.running && !a.updating)
 	a.updateButton.SetEnabled(a.pendingUpdate != nil && !a.running && !a.updating)
 	if a.stop != nil {
-		a.stop.SetEnabled(a.running)
+		a.stop.SetEnabled(a.export != nil && a.export.running)
 	}
 }
 func (a *App) initialize() {
@@ -166,6 +182,8 @@ func (a *App) initialize() {
 	}
 	cfg, warning, err := a.store.Load()
 	a.window.Synchronize(func() {
+		a.initializing = false
+		a.enable()
 		if err != nil {
 			a.status.SetText("Общие настройки не загружены")
 			a.error(err)

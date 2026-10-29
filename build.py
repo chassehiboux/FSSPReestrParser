@@ -23,6 +23,7 @@ go = shutil.which('go') or str(root/'.tools/go/bin/go.exe')
 bootstrap = json.loads(args.bootstrap.read_text(encoding='utf-8')) if args.bootstrap.exists() else {}
 shared = os.environ.get('FSSP_SHARED_PATH', bootstrap.get('shared_settings', ''))
 admin = os.environ.get('FSSP_ADMIN_SID', bootstrap.get('admin_sid', ''))
+registry_source = os.environ.get('FSSP_REGISTRY_SOURCE_ROOT', bootstrap.get('registry_source_root', ''))
 if not shared or not admin:
     raise SystemExit('Задайте FSSP_SHARED_PATH/FSSP_ADMIN_SID или локальный bootstrap JSON')
 
@@ -34,7 +35,7 @@ out = args.output_dir.resolve()
 out.mkdir(parents=True,exist_ok=True)
 # Компоновщик Go принимает значения -X в кавычках, включая пробелы и обратные слеши.
 flags = '-s -w -H windowsgui '
-for name, value in [('main.SharedSettings',shared), ('github.com/chassehiboux/FSSPReestrParser/internal/platform.AdminSID',admin), ('github.com/chassehiboux/FSSPReestrParser/internal/update.Version',args.version)]:
+for name, value in [('main.SharedSettings',shared), ('github.com/chassehiboux/FSSPReestrParser/internal/platform.AdminSID',admin), ('github.com/chassehiboux/FSSPReestrParser/internal/platform.RegistrySourceRoot',registry_source), ('github.com/chassehiboux/FSSPReestrParser/internal/update.Version',args.version)]:
     if '"' in value or "'" in value or '\n' in value:
         raise SystemExit('Недопустимое значение параметра сборки')
     flags += '-X "'+name+'='+value+'" '

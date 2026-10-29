@@ -1,0 +1,500 @@
+package registry
+
+import (
+	"bytes"
+	"context"
+	_ "embed"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+	"unicode/utf16"
+
+	"github.com/xuri/excelize/v2"
+)
+
+//go:embed templates/initiation.xlsx
+var initiation []byte
+
+//go:embed templates/termination.xlsx
+var termination []byte
+
+var SourceFields = []string{"Регистрационный номер ИП", "Дата возбуждения", "Должник", "Сумма долга", "Взыскатель", "Номер ИД", "Номер дела", "Подразделение ОСП", "Дата вступления решения в законную силу", "Дата выдачи ИД", "Дата завершения ИП", "Подпункт", "Пункт", "Статья"}
+var exportFields = []string{"ФИО", "Номер ИД", "Переданная на принудительное исполнение сумма", "Взыскатель", "д.р."}
+var StageNames = []string{
+	"Сверка исходного файла с выгрузкой ОВЗИД",
+	"Создание реестра возбуждения по строкам с найденной д.р.",
+	"Создание реестра окончания по строкам с найденной д.р.",
+	"Создание реестра окончания по строкам без д.р.",
+	"Создание реестра аналитики по всем строкам исходного файла",
+}
+
+type Options struct {
+	Source, Exports string
+	Month           time.Month
+	Year            int
+}
+type Event struct {
+	Stage                 int
+	State, Detail         string
+	Checked, Total, Found int
+}
+type Result struct {
+	Dir          string
+	Total, Found int
+	Files        []string
+}
+type record struct {
+	Values   []value
+	Birthday time.Time
+	Status   string
+}
+type key [4]value
+type birthInfo struct {
+	Dates            map[string]time.Time
+	Missing, Invalid bool
+}
+
+func makeKey(row []value, cols map[string]int, names []string) (key, bool) {
+	var k key
+	for i, name := range names {
+		k[i] = at(row, cols[name])
+		if k[i].empty() {
+			return k, false
+		}
+		if k[i].Kind == 'n' {
+			k[i].Text = ""
+		}
+	}
+	if k[0].Kind == 's' {
+		k[0].Text = strings.ToLower(k[0].Text)
+	}
+	return k, true
+}
+func birthday(v value, date1904 bool) (time.Time, bool) {
+	var t time.Time
+	if v.Kind == 'n' {
+		t, _ = excelize.ExcelDateToTime(v.Number, date1904)
+	} else {
+		for _, layout := range []string{"02.01.2006", "2006-01-02", time.RFC3339, "2006-01-02T15:04:05"} {
+			if parsed, e := time.Parse(layout, v.Text); e == nil {
+				t = parsed
+				break
+			}
+		}
+	}
+	if t.IsZero() || t.Year() < 1900 || t.After(time.Now()) {
+		return time.Time{}, false
+	}
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC), true
+}
+func Names(month time.Month, year int) ([]string, error) {
+	if month < 1 || month > 12 || year < 1900 || year > 9999 {
+		return nil, fmt.Errorf("выберите корректные месяц и год")
+	}
+	prefix := []string{"Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"}[month-1] + fmt.Sprintf("%02d", year%100) + "_"
+	return []string{prefix + "Возб_Изв_Отк_С_ДР.xlsx", prefix + "Окон_Изв_Отказы_С_ДР.xlsx", prefix + "Окон_Изв_Отк_БЕЗ_ДР.xlsx", prefix + "Аналитика.xlsx"}, nil
+}
+func reserve(parent string, names []string) (string, error) {
+	for i := 0; ; i++ {
+		name := "Сверка"
+		if i > 0 {
+			name = fmt.Sprintf("Сверка (%d)", i)
+		}
+		dir := filepath.Join(parent, name)
+		if _, err := os.Stat(dir); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		for _, n := range names {
+			full := filepath.Join(dir, n)
+			if len(utf16.Encode([]rune(full))) > 218 {
+				return "", fmt.Errorf("путь результата длиннее 218 символов: %s\nПеренесите исходный файл в папку с более коротким путём и повторите запуск. Номер подпапки «Сверка» также учитывается", full)
+			}
+		}
+		err := os.Mkdir(dir, 0700)
+		if os.IsExist(err) {
+			continue
+		}
+		return dir, err
+	}
+}
+
+func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err error) {
+	stage := 0
+	send := func(state, detail string, checked, total, found int) {
+		if emit != nil {
+			emit(Event{Stage: stage, State: state, Detail: detail, Checked: checked, Total: total, Found: found})
+		}
+	}
+	defer func() {
+		if err != nil {
+			state := "Ошибка"
+			if errors.Is(err, context.Canceled) {
+				state = "Отменён"
+			}
+			send(state, err.Error(), 0, result.Total, result.Found)
+		}
+	}()
+	names, err := Names(opt.Month, opt.Year)
+	if err != nil {
+		return result, err
+	}
+	sourcePath, err := filepath.Abs(opt.Source)
+	if err != nil {
+		return result, err
+	}
+	exportPath, err := filepath.Abs(opt.Exports)
+	if err != nil {
+		return result, err
+	}
+	if strings.EqualFold(filepath.Dir(sourcePath), exportPath) {
+		return result, fmt.Errorf("исходный файл не должен находиться в выбранной папке выгрузки ОВЗИД")
+	}
+	dir, err := reserve(filepath.Dir(sourcePath), names)
+	if err != nil {
+		return result, err
+	}
+	success := false
+	defer func() {
+		if !success {
+			cleanup := os.RemoveAll(dir)
+			if cleanup != nil {
+				err = errors.Join(err, fmt.Errorf("не удалось удалить незавершённую папку %s: %w", dir, cleanup))
+			}
+		}
+	}()
+	send("Выполняется", "Чтение исходного файла…", 0, 0, 0)
+	var sourceHeaders []value
+	var sourceCols map[string]int
+	rows := []record{}
+	wanted := map[key]*birthInfo{}
+	sourceKeys := []string{"Должник", "Номер ИД", "Сумма долга", "Взыскатель"}
+	err = scanBook(ctx, sourcePath, func(_ int, row []value, date1904 bool) error {
+		if sourceCols == nil {
+			var e error
+			sourceCols, e = headers(row, SourceFields)
+			sourceHeaders = append([]value(nil), row...)
+			return e
+		}
+		empty := true
+		for _, v := range row {
+			if !v.empty() {
+				empty = false
+				break
+			}
+		}
+		if empty {
+			return nil
+		}
+		if len(row) > len(sourceHeaders) {
+			return fmt.Errorf("в исходнике есть данные за пределами заголовков")
+		}
+		for len(row) < len(sourceHeaders) {
+			row = append(row, value{})
+		}
+		if date1904 {
+			for _, field := range []string{"Дата возбуждения", "Дата вступления решения в законную силу", "Дата выдачи ИД", "Дата завершения ИП"} {
+				i := sourceCols[field]
+				if row[i].Kind == 'n' {
+					row[i].Number += 1462
+				}
+			}
+		}
+		rows = append(rows, record{Values: row})
+		if k, ok := makeKey(row, sourceCols, sourceKeys); ok {
+			if wanted[k] == nil {
+				wanted[k] = &birthInfo{Dates: map[string]time.Time{}}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return result, fmt.Errorf("исходный файл: %w", err)
+	}
+	if sourceCols == nil {
+		return result, fmt.Errorf("исходный файл пуст")
+	}
+	result.Total = len(rows)
+	entries, err := os.ReadDir(exportPath)
+	if err != nil {
+		return result, err
+	}
+	exports := []string{}
+	for _, e := range entries {
+		if !e.IsDir() && strings.EqualFold(filepath.Ext(e.Name()), ".xlsx") && !strings.HasPrefix(e.Name(), "~$") {
+			exports = append(exports, filepath.Join(exportPath, e.Name()))
+		}
+	}
+	if len(exports) == 0 {
+		return result, fmt.Errorf("в папке нет XLSX-файлов выгрузки ОВЗИД")
+	}
+	for i, file := range exports {
+		send("Выполняется", fmt.Sprintf("Чтение ОВЗИД %d/%d: %s", i+1, len(exports), filepath.Base(file)), 0, len(rows), 0)
+		before, e := os.Stat(file)
+		if e != nil {
+			return result, e
+		}
+		var cols map[string]int
+		e = scanBook(ctx, file, func(rowNumber int, row []value, date1904 bool) error {
+			if rowNumber%2000 == 0 {
+				send("Выполняется", fmt.Sprintf("Чтение ОВЗИД %d/%d: прочитано %d строк · %s", i+1, len(exports), rowNumber-1, filepath.Base(file)), 0, len(rows), 0)
+			}
+			if cols == nil {
+				var e error
+				cols, e = headers(row, exportFields)
+				return e
+			}
+			k, ok := makeKey(row, cols, exportFields[:4])
+			if !ok || wanted[k] == nil {
+				return nil
+			}
+			info := wanted[k]
+			v := at(row, cols["д.р."])
+			if v.empty() {
+				info.Missing = true
+			} else if t, valid := birthday(v, date1904); valid {
+				info.Dates[t.Format("2006-01-02")] = t
+			} else {
+				info.Invalid = true
+			}
+			return nil
+		})
+		if e != nil {
+			return result, fmt.Errorf("выгрузка «%s»: %w", filepath.Base(file), e)
+		}
+		if cols == nil {
+			return result, fmt.Errorf("выгрузка «%s» пуста", filepath.Base(file))
+		}
+		after, e := os.Stat(file)
+		if e != nil {
+			return result, e
+		}
+		if before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
+			return result, fmt.Errorf("выгрузка «%s» изменилась во время чтения; повторите запуск после завершения выгрузки", filepath.Base(file))
+		}
+	}
+	for i := range rows {
+		if err = ctx.Err(); err != nil {
+			return result, err
+		}
+		r := &rows[i]
+		k, ok := makeKey(r.Values, sourceCols, sourceKeys)
+		r.Status = "Точное совпадение не найдено"
+		if !ok {
+			r.Status = "Не заполнены поля ключа"
+		} else if info := wanted[k]; info != nil {
+			switch {
+			case len(info.Dates) > 1:
+				r.Status = "Полностью совпало; найдены разные д.р."
+			case info.Invalid:
+				r.Status = "Полностью совпало; некорректная д.р. в выгрузке"
+			case len(info.Dates) == 1:
+				for _, t := range info.Dates {
+					r.Birthday = t
+				}
+				r.Status = "Полностью совпало"
+				result.Found++
+			case info.Missing:
+				r.Status = "Полностью совпало; д.р. отсутствует"
+			}
+		}
+		if i%100 == 0 || i+1 == len(rows) {
+			send("Выполняется", fmt.Sprintf("Проверено %d/%d, Найдено д.р. %d", i+1, len(rows), result.Found), i+1, len(rows), result.Found)
+		}
+	}
+	send("Готово", fmt.Sprintf("Проверено %d/%d, Найдено д.р. %d", len(rows), len(rows), result.Found), len(rows), len(rows), result.Found)
+	// Полный комплект готовится вне папки результата: в ней не бывает частично записанных XLSX.
+	tmp, err := os.MkdirTemp("", "fssp-registers-")
+	if err != nil {
+		return result, err
+	}
+	defer os.RemoveAll(tmp)
+	for i := 0; i < 4; i++ {
+		stage = i + 1
+		send("Выполняется", "Формирование файла…", 0, len(rows), result.Found)
+		if err = writeBook(ctx, filepath.Join(tmp, names[i]), i, sourceHeaders, sourceCols, rows); err != nil {
+			return result, err
+		}
+		send("Подготовлен", "Файл сформирован; ожидает сохранения комплекта", 0, len(rows), result.Found)
+	}
+	for _, name := range names {
+		if err = ctx.Err(); err != nil {
+			return result, err
+		}
+		if err = copyFile(ctx, filepath.Join(tmp, name), filepath.Join(dir, name)); err != nil {
+			return result, err
+		}
+	}
+	if err = ctx.Err(); err != nil {
+		return result, err
+	}
+	result.Dir = dir
+	result.Files = names
+	success = true
+	for i := 1; i < 5; i++ {
+		stage = i
+		send("Сохранён", names[i-1], len(rows), len(rows), result.Found)
+	}
+	return result, nil
+}
+
+func writeBook(ctx context.Context, dest string, kind int, sourceHeaders []value, cols map[string]int, rows []record) error {
+	var f *excelize.File
+	var err error
+	if kind == 0 {
+		f, err = excelize.OpenReader(bytes.NewReader(initiation))
+	} else if kind < 3 {
+		f, err = excelize.OpenReader(bytes.NewReader(termination))
+	} else {
+		f = excelize.NewFile()
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	sheet := f.GetSheetList()[0]
+	outHeaders := []string{}
+	if kind < 3 {
+		h, err := f.GetRows(sheet)
+		if err != nil {
+			return err
+		}
+		outHeaders = h[0]
+	} else {
+		for _, v := range sourceHeaders {
+			outHeaders = append(outHeaders, v.Text)
+		}
+		outHeaders = append(outHeaders, "д.р.", "Результат сопоставления")
+		for i, h := range outHeaders {
+			cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+			if err = f.SetCellStr(sheet, cell, h); err != nil {
+				return err
+			}
+		}
+		if err = f.SetColWidth(sheet, "A", "P", 23); err != nil {
+			return err
+		}
+		if err = f.SetColWidth(sheet, "C", "C", 38); err != nil {
+			return err
+		}
+		if err = f.SetColWidth(sheet, "E", "E", 58); err != nil {
+			return err
+		}
+		last, _ := excelize.ColumnNumberToName(len(outHeaders))
+		if err = f.SetColWidth(sheet, last, last, 64); err != nil {
+			return err
+		}
+		style, e := f.NewStyle(&excelize.Style{Font: &excelize.Font{Bold: true, Color: "FFFFFF"}, Fill: excelize.Fill{Type: "pattern", Color: []string{"253D57"}, Pattern: 1}, Alignment: &excelize.Alignment{WrapText: true, Vertical: "center"}})
+		if e != nil {
+			return e
+		}
+		if err = f.SetCellStyle(sheet, "A1", last+"1", style); err != nil {
+			return err
+		}
+		if err = f.SetRowHeight(sheet, 1, 48); err != nil {
+			return err
+		}
+		if err = f.SetPanes(sheet, &excelize.Panes{Freeze: true, YSplit: 1, TopLeftCell: "A2", ActivePane: "bottomLeft"}); err != nil {
+			return err
+		}
+	}
+	styles := make([]int, len(outHeaders))
+	dateFormat := "dd.mm.yyyy"
+	for i, h := range outHeaders {
+		if kind < 3 {
+			cell, _ := excelize.CoordinatesToCellName(i+1, 2)
+			styles[i], err = f.GetCellStyle(sheet, cell)
+		} else if strings.HasPrefix(h, "Дата ") || h == "д.р." {
+			styles[i], err = f.NewStyle(&excelize.Style{CustomNumFmt: &dateFormat})
+		} else if h == "Сумма долга" {
+			styles[i], err = f.NewStyle(&excelize.Style{NumFmt: 4})
+		}
+		if err != nil {
+			return err
+		}
+	}
+	rowNum := 2
+	for _, r := range rows {
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+		if kind < 2 && r.Birthday.IsZero() || kind == 2 && !r.Birthday.IsZero() {
+			continue
+		}
+		for c, h := range outHeaders {
+			var v any
+			if h == "Д.р. должника" || kind == 3 && c == len(outHeaders)-2 {
+				if !r.Birthday.IsZero() {
+					v = r.Birthday
+				}
+			} else if kind == 3 && c == len(outHeaders)-1 {
+				v = r.Status
+			} else if kind == 3 {
+				v = r.Values[c].any()
+			} else if i, ok := cols[h]; ok {
+				v = at(r.Values, i).any()
+			} else {
+				return fmt.Errorf("столбец шаблона «%s» отсутствует в исходнике", h)
+			}
+			cell, _ := excelize.CoordinatesToCellName(c+1, rowNum)
+			if text, ok := v.(string); ok {
+				err = f.SetCellStr(sheet, cell, text)
+			} else {
+				err = f.SetCellValue(sheet, cell, v)
+			}
+			if err != nil {
+				return err
+			}
+			if err = f.SetCellStyle(sheet, cell, cell, styles[c]); err != nil {
+				return err
+			}
+		}
+		rowNum++
+	}
+	if kind == 3 {
+		last, _ := excelize.CoordinatesToCellName(len(outHeaders), max(1, rowNum-1))
+		if err = f.AutoFilter(sheet, "A1:"+last, []excelize.AutoFilterOptions{}); err != nil {
+			return err
+		}
+	}
+	if err = f.SaveAs(dest); err != nil {
+		return err
+	}
+	return validateBook(dest, len(outHeaders), rowNum-2)
+}
+
+func validateBook(filename string, columns, count int) error {
+	f, err := excelize.OpenFile(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	rows, err := f.GetRows(f.GetSheetList()[0])
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 || len(rows[0]) != columns {
+		return fmt.Errorf("неверный заголовок сформированного файла")
+	}
+	n := 0
+	for _, r := range rows[1:] {
+		nonempty := false
+		for _, v := range r {
+			if v != "" {
+				nonempty = true
+				break
+			}
+		}
+		if nonempty {
+			n++
+		}
+	}
+	if n != count {
+		return fmt.Errorf("неверное число строк сформированного файла: %d вместо %d", n, count)
+	}
+	return nil
+}
