@@ -29,7 +29,8 @@ var StageNames = []string{
 	"Создание реестра окончания по строкам с найденной д.р.",
 	"Создание реестра окончания по строкам без д.р.",
 	"Создание реестра аналитики по всем строкам исходного файла",
-	"Создание реестра возбуждения с д.р. по номеру дела",
+	"Дополнительный реестр с д.р. по делу: без совпадения по ИД",
+	"Дополнительный реестр окончания по номеру дела",
 }
 
 type Options struct {
@@ -59,9 +60,11 @@ type key [4]value
 type birthInfo struct {
 	Dates            map[string]time.Time
 	Missing, Invalid bool
+	Matched          bool
 }
 
 func (b *birthInfo) add(v value, date1904 bool) {
+	b.Matched = true
 	if v.empty() {
 		b.Missing = true
 	} else if t, valid := birthday(v, date1904); valid {
@@ -131,7 +134,7 @@ func Names(month time.Month, year int) ([]string, error) {
 		return nil, fmt.Errorf("выберите корректные месяц и год")
 	}
 	prefix := []string{"Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"}[month-1] + fmt.Sprintf("%02d", year%100) + "_"
-	return []string{prefix + "Возб_Изв_Отк_С_ДР.xlsx", prefix + "Окон_Изв_Отказы_С_ДР.xlsx", prefix + "Окон_Изв_Отк_БЕЗ_ДР.xlsx", prefix + "Аналитика.xlsx", prefix + "Возб_С_ДР_по_делу.xlsx"}, nil
+	return []string{prefix + "Возб_Изв_Отк_С_ДР.xlsx", prefix + "Окон_Изв_Отказы_С_ДР.xlsx", prefix + "Окон_Изв_Отк_БЕЗ_ДР.xlsx", prefix + "Аналитика.xlsx", prefix + "Возб_С_ДР_по_делу.xlsx", prefix + "Окон_С_ДР_по_делу.xlsx"}, nil
 }
 func reserve(parent string, names []string) (string, error) {
 	for i := 0; ; i++ {
@@ -323,8 +326,11 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 		if !r.Birthday.IsZero() {
 			result.Found++
 		}
-		ck, cok := makeKey(r.Values, sourceCols, sourceCaseKeys)
-		r.CaseBirthday, _ = resolveBirth(ck, cok, wantedByCase)
+		// Проверяем отсутствие самого совпадения ключа, а не только отсутствие найденной ДР.
+		if info := wanted[k]; !ok || info == nil || !info.Matched {
+			ck, cok := makeKey(r.Values, sourceCols, sourceCaseKeys)
+			r.CaseBirthday, _ = resolveBirth(ck, cok, wantedByCase)
+		}
 		if !r.CaseBirthday.IsZero() {
 			result.FoundByCase++
 		}
@@ -346,7 +352,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 			return result, err
 		}
 		detail := "Файл сформирован; ожидает сохранения комплекта"
-		if i == 4 {
+		if i >= 4 {
 			detail = fmt.Sprintf("Найдено д.р. по номеру дела: %d; ожидает сохранения комплекта", result.FoundByCase)
 		}
 		send("Подготовлен", detail, 0, len(rows), result.Found)
@@ -377,7 +383,7 @@ func writeBook(ctx context.Context, dest string, kind int, sourceHeaders []value
 	var err error
 	if kind == 0 || kind == 4 {
 		f, err = excelize.OpenReader(bytes.NewReader(initiation))
-	} else if kind < 3 {
+	} else if kind < 3 || kind == 5 {
 		f, err = excelize.OpenReader(bytes.NewReader(termination))
 	} else {
 		f = excelize.NewFile()
@@ -453,10 +459,10 @@ func writeBook(ctx context.Context, dest string, kind int, sourceHeaders []value
 			return err
 		}
 		birth := r.Birthday
-		if kind == 4 {
+		if kind >= 4 {
 			birth = r.CaseBirthday
 		}
-		if (kind < 2 || kind == 4) && birth.IsZero() || kind == 2 && !birth.IsZero() {
+		if (kind < 2 || kind >= 4) && birth.IsZero() || kind == 2 && !birth.IsZero() {
 			continue
 		}
 		for c, h := range outHeaders {

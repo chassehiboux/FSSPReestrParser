@@ -92,10 +92,10 @@ func TestStrictOutputsAndRepeatedRun(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if r.Found != 2 || r.Total != 8 || r.FoundByCase != 2 {
+	if r.Found != 2 || r.Total != 8 || r.FoundByCase != 0 {
 		t.Fatalf("%+v", r)
 	}
-	counts := []int{2, 2, 6, 8, 2}
+	counts := []int{2, 2, 6, 8, 0, 0}
 	if len(r.Files) != len(counts) {
 		t.Fatal("нет пятого файла", r.Files)
 	}
@@ -104,7 +104,7 @@ func TestStrictOutputsAndRepeatedRun(t *testing.T) {
 		if len(rows)-1 != counts[i] {
 			t.Fatalf("%s: %d", name, len(rows)-1)
 		}
-		if i == 1 || i == 2 {
+		if i == 1 || i == 2 || i == 5 {
 			if !reflect.DeepEqual(rows[0], SourceFields) {
 				t.Fatal("изменён шаблон окончания", rows[0])
 			}
@@ -213,9 +213,9 @@ func TestRealWorkbook(t *testing.T) {
 	if r.Total != 3376 || r.Found != 940 {
 		t.Fatalf("неожиданный результат %+v", r)
 	}
-	counts := []int{940, 940, 2436, 3376, r.FoundByCase}
-	if len(r.Files) != 5 {
-		t.Fatal("нет пятого файла")
+	counts := []int{940, 940, 2436, 3376, r.FoundByCase, r.FoundByCase}
+	if len(r.Files) != 6 {
+		t.Fatal("нет шести файлов")
 	}
 	for i, n := range r.Files {
 		if len(readRows(t, filepath.Join(r.Dir, n)))-1 != counts[i] {
@@ -225,7 +225,7 @@ func TestRealWorkbook(t *testing.T) {
 	t.Log("Результаты:", r.Dir, "Найдено по номеру дела:", r.FoundByCase)
 }
 
-func TestCaseNumberMatchingIsIndependent(t *testing.T) {
+func TestCaseNumberMatchesUnmatchedID(t *testing.T) {
 	opt := setup(t)
 	row := func(fio, id, caseNumber string, amount any, party string) []any {
 		return []any{"ИП", 45000, fio, amount, party, id, caseNumber, "ОСП", 44900, 44901, 45030, nil, nil, nil}
@@ -264,5 +264,53 @@ func TestCaseNumberMatchingIsIndependent(t *testing.T) {
 	}
 	if newRows[1][8] != "другой ИД" {
 		t.Fatal("номер ИД исходника заменён значением кандидата")
+	}
+	ending := readRows(t, filepath.Join(r.Dir, r.Files[5]))
+	if len(ending) != len(newRows) || !reflect.DeepEqual(ending[0], SourceFields) {
+		t.Fatal("неверный состав или шаблон дополнительного окончания")
+	}
+	for i := 1; i < len(ending); i++ {
+		if ending[i][2] != newRows[i][0] || ending[i][5] != newRows[i][8] {
+			t.Fatal("состав дополнительных реестров различается")
+		}
+	}
+}
+
+func TestOriginalMatchExcludesCaseEvenWithoutUsableBirth(t *testing.T) {
+	opt := setup(t)
+	rows := [][]any{}
+	exports := [][]any{}
+	for i, name := range []string{"Полное совпадение", "Нет даты", "Конфликт дат", "Некорректная дата"} {
+		id, caseNumber := name+" ИД", name+" дело"
+		amount := 100 + i
+		rows = append(rows, []any{"ИП", 45000, name, amount, "АО", id, caseNumber, "ОСП", 44900, 44901, 45030, nil, nil, nil})
+		var born any = "01.01.1980"
+		if i == 1 {
+			born = nil
+		}
+		if i == 3 {
+			born = "ошибка"
+		}
+		exports = append(exports, []any{name, id, amount, "АО", born, "другое дело"})
+		if i == 2 {
+			exports = append(exports, []any{name, id, amount, "АО", "02.01.1980", "ещё дело"})
+		}
+		// По делу дата единственная и корректная, но исходный ключ уже совпал.
+		exports = append(exports, []any{name, "иной ИД", amount, "АО", "01.01.1980", caseNumber})
+	}
+	fixture(t, opt.Source, SourceFields, rows)
+	fixture(t, filepath.Join(opt.Exports, "Выгрузка.xlsx"), exportFields, exports)
+	r, e := Run(context.Background(), opt, nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if r.Found != 1 || r.FoundByCase != 0 {
+		t.Fatal("совпавшие исходные ключи ошибочно включены по делу", r)
+	}
+	if len(readRows(t, filepath.Join(r.Dir, r.Files[4]))) != 1 {
+		t.Fatal("пятый файл должен содержать только заголовок")
+	}
+	if len(readRows(t, filepath.Join(r.Dir, r.Files[5]))) != 1 {
+		t.Fatal("шестой файл должен содержать только заголовок")
 	}
 }
