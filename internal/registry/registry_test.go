@@ -314,3 +314,38 @@ func TestOriginalMatchExcludesCaseEvenWithoutUsableBirth(t *testing.T) {
 		t.Fatal("шестой файл должен содержать только заголовок")
 	}
 }
+
+func TestExportReadCounterContinuesAcrossFiles(t *testing.T) {
+	opt := setup(t)
+	fixture(t, filepath.Join(opt.Exports, "Я-второй.xlsx"), exportFields, [][]any{
+		{nil, nil, nil, nil, nil, nil},
+		{"Другой должник", "ИД", 10, "АО", nil, "дело"},
+		{"Ещё должник", "ИД2", 20, "АО", nil, "дело2"},
+	})
+	var events []Event
+	r, err := Run(context.Background(), opt, func(e Event) { events = append(events, e) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.ReadRows != 8 {
+		t.Fatal("неверный общий счётчик, заголовки и пустые строки не учитываются", r.ReadRows)
+	}
+	last := 0
+	sawBoundary := false
+	sawFinal := false
+	for _, e := range events {
+		if e.ReadRows < last {
+			t.Fatalf("счётчик сбросился: %d → %d", last, e.ReadRows)
+		}
+		last = e.ReadRows
+		if strings.Contains(e.Detail, "Я-второй.xlsx") && e.ReadRows == 6 {
+			sawBoundary = true
+		}
+		if strings.Contains(e.Detail, "Прочитано строк ОВЗИД: 8") {
+			sawFinal = true
+		}
+	}
+	if !sawBoundary || !sawFinal {
+		t.Fatal("нет накопительного счётчика при переходе и завершении файла")
+	}
+}

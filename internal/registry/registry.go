@@ -43,11 +43,13 @@ type Event struct {
 	State, Detail         string
 	Checked, Total, Found int
 	FoundByCase           int
+	ReadRows              int
 }
 type Result struct {
 	Dir          string
 	Total, Found int
 	FoundByCase  int
+	ReadRows     int
 	Files        []string
 }
 type record struct {
@@ -166,7 +168,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 	stage := 0
 	send := func(state, detail string, checked, total, found int) {
 		if emit != nil {
-			emit(Event{Stage: stage, State: state, Detail: detail, Checked: checked, Total: total, Found: found, FoundByCase: result.FoundByCase})
+			emit(Event{Stage: stage, State: state, Detail: detail, Checked: checked, Total: total, Found: found, FoundByCase: result.FoundByCase, ReadRows: result.ReadRows})
 		}
 	}
 	defer func() {
@@ -278,20 +280,34 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 		return result, fmt.Errorf("в папке нет XLSX-файлов выгрузки ОВЗИД")
 	}
 	for i, file := range exports {
-		send("Выполняется", fmt.Sprintf("Чтение ОВЗИД %d/%d: %s", i+1, len(exports), filepath.Base(file)), 0, len(rows), 0)
+		reportRead := func() {
+			send("Выполняется", fmt.Sprintf("Прочитано строк ОВЗИД: %d · файл %d/%d · %s", result.ReadRows, i+1, len(exports), filepath.Base(file)), 0, len(rows), 0)
+		}
+		reportRead()
 		before, e := os.Stat(file)
 		if e != nil {
 			return result, e
 		}
 		var cols map[string]int
-		e = scanBook(ctx, file, func(rowNumber int, row []value, date1904 bool) error {
-			if rowNumber%2000 == 0 {
-				send("Выполняется", fmt.Sprintf("Чтение ОВЗИД %d/%d: прочитано %d строк · %s", i+1, len(exports), rowNumber-1, filepath.Base(file)), 0, len(rows), 0)
-			}
+		e = scanBook(ctx, file, func(_ int, row []value, date1904 bool) error {
 			if cols == nil {
 				var e error
 				cols, e = headers(row, exportFields)
 				return e
+			}
+			empty := true
+			for _, v := range row {
+				if !v.empty() {
+					empty = false
+					break
+				}
+			}
+			if empty {
+				return nil
+			}
+			result.ReadRows++
+			if result.ReadRows%2000 == 0 {
+				reportRead()
 			}
 			v := at(row, cols["д.р."])
 			if k, ok := makeKey(row, cols, exportFields[:4]); ok && wanted[k] != nil {
@@ -315,6 +331,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 		if before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
 			return result, fmt.Errorf("выгрузка «%s» изменилась во время чтения; повторите запуск после завершения выгрузки", filepath.Base(file))
 		}
+		reportRead()
 	}
 	for i := range rows {
 		if err = ctx.Err(); err != nil {
