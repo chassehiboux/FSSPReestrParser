@@ -1,6 +1,5 @@
 Option Explicit
 
-Private Declare PtrSafe Sub Sleep Lib "kernel32" (ByVal Milliseconds As Long)
 Private Declare PtrSafe Function BCryptOpenAlgorithmProvider Lib "bcrypt" (ByRef Handle As LongPtr, ByVal Algorithm As LongPtr, ByVal Provider As LongPtr, ByVal Flags As Long) As Long
 Private Declare PtrSafe Function BCryptGetProperty Lib "bcrypt" (ByVal Handle As LongPtr, ByVal Property As LongPtr, ByRef Output As Any, ByVal Size As Long, ByRef ResultSize As Long, ByVal Flags As Long) As Long
 Private Declare PtrSafe Function BCryptCreateHash Lib "bcrypt" (ByVal Provider As LongPtr, ByRef Hash As LongPtr, ByRef HashObject As Any, ByVal ObjectSize As Long, ByVal Secret As LongPtr, ByVal SecretSize As Long, ByVal Flags As Long) As Long
@@ -14,6 +13,10 @@ Private Const RELEASE_API As String = "https://api.github.com/repos/chassehiboux
 Private Const RELEASE_ROOT As String = "https://github.com/chassehiboux/FSSPReestrParser/releases/download/"
 Private Const REG_PATH As String = "HKCU\Software\FSSPReestrParser\ExecutablePath"
 Private Running As Boolean
+
+Public Sub StartFSSPParser()
+    StartFSSPReestrParser
+End Sub
 
 Public Sub StartFSSPReestrParser()
     If Running Then Exit Sub
@@ -135,6 +138,7 @@ Private Sub WaitDownload(ByVal Request As cFSSPDownload, ByVal View As Object)
     Do While Not Request.Done
         DoEvents
         If View.Cancelled Then Request.Cancel
+        Request.Poll
         Elapsed = Timer - Started
         If Elapsed < 0 Then Elapsed = Elapsed + 86400#
         If Elapsed > 600 Then Request.Cancel: Err.Raise 5, , "Превышено время ожидания скачивания"
@@ -142,7 +146,6 @@ Private Sub WaitDownload(ByVal Request As cFSSPDownload, ByVal View As Object)
             View.ShowProgress Request.Received, Request.Total, Elapsed
             LastPaint = Timer
         End If
-        Sleep 25
     Loop
     Elapsed = Timer - Started
     If Elapsed < 0 Then Elapsed = Elapsed + 86400#

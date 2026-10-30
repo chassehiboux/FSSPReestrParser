@@ -4,6 +4,7 @@
 не обращается к GitHub и не изменяет реестр пользователя.
 """
 from pathlib import Path
+import argparse
 import hashlib
 import http.server
 import json
@@ -14,6 +15,9 @@ import time
 import win32com.client
 
 ROOT = Path(__file__).resolve().parent
+parser = argparse.ArgumentParser()
+parser.add_argument('--package-dir', type=Path, default=ROOT.parent / 'output/excel-launcher')
+args = parser.parse_args()
 payload = bytearray(2 * 1024 * 1024)
 payload[:2] = b'MZ'
 struct.pack_into('<I', payload, 60, 128)
@@ -37,10 +41,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             body = payload
         self.send_response(200)
-        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Content-Length', str(len(body) + (1 if mode == 'wrong-size' and len(body) > 65536 else 0)))
         self.end_headers()
         try:
             for offset in range(0, len(body), 32768):
+                if mode == 'truncated' and len(body) > 65536 and offset >= len(body) // 2:
+                    break
                 self.wfile.write(body[offset:offset + 32768])
                 self.wfile.flush()
                 if len(body) > 65536:
@@ -59,7 +65,13 @@ book = None
 try:
     with tempfile.TemporaryDirectory(prefix='fssp-vba-') as folder:
         root = Path(folder)
-        book = app.Workbooks.Open(str(ROOT.parent / 'output/excel-launcher/Запуск_реестров_ФССП.xlsm'))
+        # Импорт ровно тех компонентов, которые получает автор своей надстройки.
+        book = app.Workbooks.Add()
+        for name in ['mFSSPLauncher.bas', 'cFSSPDownload.cls', 'frmFSSPLauncher.frm']:
+            book.VBProject.VBComponents.Import(str((args.package_dir / name).resolve()))
+        assert not any(ref.Name.lower() == 'winhttp' for ref in book.VBProject.References)
+        book.SaveAs(str(root / 'TestLauncher.xlam'), 55)
+        book.IsAddin = True
         module = book.VBProject.VBComponents('mFSSPLauncher').CodeModule
         code = module.Lines(1, module.CountOfLines)
         code = code.replace('https://api.github.com/repos/chassehiboux/FSSPReestrParser/releases/latest', url + '/latest')
@@ -78,6 +90,11 @@ Public Function TestInstall(ByVal AbortDownload As Boolean) As String
 Failed:
     TestInstall = "ERROR|" & Err.Description & "|" & View.Paints
 End Function
+Public Function TestForm() As String
+    Dim View As New frmFSSPLauncher
+    TestForm = View.Caption
+    Unload View
+End Function
 ''')
         view = book.VBProject.VBComponents.Add(2)
         view.Name = 'TestView'
@@ -92,7 +109,9 @@ Public Sub ShowProgress(ByVal Received As Double, ByVal Total As Double, ByVal S
     If AbortDownload And Total > 65536 And Received > 0 Then Cancelled = True
 End Sub
 ''')
-        for mode in ['success', 'bad-hash', 'http-error', 'cancel']:
+        assert app.Run("'" + book.Name + "'!TestForm") == 'Запуск реестров ФССП'
+        print('Импорт в чистую .xlam и загрузка UserForm без WinHTTP Reference: OK', flush=True)
+        for mode in ['success', 'bad-hash', 'http-error', 'cancel', 'wrong-size', 'truncated']:
             target = root / 'app/FSSPReestrParser-windows-amd64.exe'
             target.unlink(missing_ok=True)
             result = app.Run("'" + book.Name + "'!TestInstall", mode == 'cancel')

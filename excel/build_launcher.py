@@ -22,7 +22,6 @@ book=None
 try:
     book=app.Workbooks.Add()
     project=book.VBProject
-    project.References.AddFromGuid('{662901FC-6951-4854-9EB2-D9A2570F2B2E}',5,1)
     for name,kind,filename in [('mFSSPLauncher',1,'Launcher.bas'),('cFSSPDownload',2,'Download.cls')]:
         component=project.VBComponents.Add(kind)
         component.Name=name
