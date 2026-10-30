@@ -6,7 +6,6 @@ import (
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
 	"github.com/lxn/win"
-	"unsafe"
 )
 
 type operation struct {
@@ -136,15 +135,7 @@ func (a *App) showOperation(op *operation) {
 }
 
 func (a *App) sizeStatusWindow() {
-	var mi win.MONITORINFO
-	mi.CbSize = uint32(unsafe.Sizeof(mi))
-	if win.GetMonitorInfo(win.MonitorFromWindow(a.window.Handle(), win.MONITOR_DEFAULTTONEAREST), &mi) {
-		area := mi.RcWork
-		main := a.window.BoundsPixels()
-		width := int(area.Right - area.Left)
-		height := min(a.window.IntFrom96DPI(780), int(area.Bottom-area.Top))
-		a.window.SetBoundsPixels(walk.Rectangle{X: int(area.Left), Y: max(int(area.Top), min(main.Y, int(area.Bottom)-height)), Width: width, Height: height})
-	}
+	win.ShowWindow(a.window.Handle(), win.SW_MAXIMIZE)
 }
 func (a *App) hideOperation(op *operation) {
 	op.panel.SetVisible(false)
