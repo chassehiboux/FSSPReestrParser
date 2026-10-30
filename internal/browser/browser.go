@@ -193,13 +193,18 @@ func waitDOM(p *rod.Page) error {
 }
 
 func waitGrid(p *rod.Page, filtered bool) error {
-	return p.Timeout(2 * time.Minute).Wait(rod.Eval(`filtered => {
+	err := p.Timeout(2 * time.Minute).Wait(rod.Eval(`filtered => {
+ if(document.querySelector('#Input_UserName,#Input_Password')||location.pathname==='/login/pyrsso')throw new Error('FSSP_AUTH_REQUIRED');
  const errors=Array.from(document.querySelectorAll('.alert-danger,.alert-error,.validation-summary-errors')).filter(e=>e.getBoundingClientRect().width&&e.getBoundingClientRect().height).map(e=>e.textContent.replace(/×/g,'').trim()).filter(Boolean);
  if(errors.length)throw new Error('Пирамида: '+errors.join(' '));
  const grid=document.getElementById('list');
  if(filtered&&window.__fsspFilter?.done&&window.__fsspFilter.status!==200)throw new Error('Запрос таблицы не выполнен (HTTP '+window.__fsspFilter.status+'). Проверьте подключение и вход в Пирамиду');
  return !!grid?.p&&!grid.grid.hDiv.loading&&(!filtered||!!window.__fsspFilter?.done);
 }`, filtered))
+	if err != nil && strings.Contains(err.Error(), "FSSP_AUTH_REQUIRED") {
+		return fmt.Errorf("%w: требуется повторный вход", queue.ErrAuthRequired)
+	}
+	return err
 }
 
 // AuthSnapshot не содержит паролей и строк данных со страницы.
@@ -225,12 +230,16 @@ func CredentialRejected(text string) bool {
 }
 
 func (e *Engine) ensureLogin(ctx context.Context, p *rod.Page, base model.Base) error {
+	return e.ensureLoginWithin(ctx, p, base, 2*time.Minute)
+}
+
+func (e *Engine) ensureLoginWithin(ctx context.Context, p *rod.Page, base model.Base, timeout time.Duration) error {
 	var submitted bool
 	var submittedAt time.Time
 	var stamp string
 	var remembered bool
 	var lastRead error
-	deadline := time.Now().Add(2 * time.Minute)
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -254,12 +263,13 @@ func (e *Engine) ensureLogin(ctx context.Context, p *rod.Page, base model.Base) 
 		}
 		if state.Form {
 			if submitted {
-				if state.Stamp != stamp && state.Error != "" {
+				if state.Error != "" && (state.Stamp != stamp || time.Since(submittedAt) > 500*time.Millisecond) {
 					if CredentialRejected(state.Error) {
 						e.credentials.Password = ""
 						os.Remove(filepath.Join(e.local, "credentials.dat"))
 					}
 					submitted = false
+					deadline = time.Now().Add(timeout)
 					if !CredentialRejected(state.Error) {
 						return fmt.Errorf("Сервис авторизации отклонил вход: %s", state.Error)
 					}
@@ -287,8 +297,10 @@ func (e *Engine) ensureLogin(ctx context.Context, p *rod.Page, base model.Base) 
 				}
 				e.credentials = creds
 				remembered = creds.Remember
+				// Время, потраченное человеком на ввод, не является ожиданием сервиса.
+				deadline = time.Now().Add(timeout)
 			}
-			_, err := p.Eval(`(u,pw) => {const uEl=document.querySelector('#Input_UserName'),pEl=document.querySelector('#Input_Password');if(!uEl||!pEl)throw new Error('Форма входа изменилась');uEl.value=u;pEl.value=pw;uEl.dispatchEvent(new Event('input',{bubbles:true}));pEl.dispatchEvent(new Event('input',{bubbles:true}));const submit=document.querySelector('#login-submit,button[type=submit]');if(!submit)throw new Error('Кнопка входа отсутствует');setTimeout(()=>submit.click(),0);}`, e.credentials.Username, e.credentials.Password)
+			_, err := p.Eval(`(u,pw) => {const uEl=document.querySelector('#Input_UserName'),pEl=document.querySelector('#Input_Password');if(!uEl||!pEl)throw new Error('Форма входа изменилась');uEl.value=u;pEl.value=pw;uEl.dispatchEvent(new Event('input',{bubbles:true}));pEl.dispatchEvent(new Event('input',{bubbles:true}));const submit=document.querySelector('#login-submit,button[type=submit]');if(!submit)throw new Error('Кнопка входа отсутствует');document.querySelectorAll('.validation-summary-errors,.field-validation-error,[data-valmsg-summary="true"],#Input_Password-error,#Input_UserName-error').forEach(el=>{const list=el.querySelector('ul');if(list)list.querySelectorAll('li').forEach(li=>li.textContent='');else el.textContent=''});setTimeout(()=>submit.click(),0);}`, e.credentials.Username, e.credentials.Password)
 			if err != nil {
 				return err
 			}
@@ -462,7 +474,14 @@ func (e *Engine) Begin(ctx context.Context, j model.Job) (*queue.Pending, error)
 	events := make(chan queue.Event, 32)
 	var once sync.Once
 	closePage := func() { once.Do(func() { cancel(); p.Context(context.Background()).Timeout(5 * time.Second).Close() }) }
-	fail := func(err error) (*queue.Pending, error) { closePage(); return nil, err }
+	fail := func(err error) (*queue.Pending, error) {
+		var state AuthSnapshot
+		if ctx.Err() == nil && !errors.Is(err, context.Canceled) && read(p.Timeout(3*time.Second), authJS, &state) == nil && (state.Form || state.Entry || LoginURL(state.URL)) {
+			err = fmt.Errorf("%w: %v", queue.ErrAuthRequired, err)
+		}
+		closePage()
+		return nil, err
+	}
 	if !prepared {
 		if err = waitDOM(p); err != nil {
 			return fail(err)

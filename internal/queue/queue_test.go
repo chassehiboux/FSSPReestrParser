@@ -176,6 +176,42 @@ func (f *authRetry) Begin(context.Context, model.Job) (*Pending, error) {
 	}
 	return &Pending{Events: ch, Close: func() {}}, nil
 }
+
+type preparationRetry struct {
+	attempts map[string]int
+	failure  error
+}
+
+func (f *preparationRetry) Begin(_ context.Context, job model.Job) (*Pending, error) {
+	f.attempts[job.ID]++
+	if job.ID == "expired" && f.attempts[job.ID] == 1 {
+		return nil, f.failure
+	}
+	ch := make(chan Event, 1)
+	ch <- Event{State: Saved}
+	return &Pending{Events: ch, Close: func() {}}, nil
+}
+
+func TestAuthExpiryDuringPreparation(t *testing.T) {
+	for _, auth := range []bool{true, false} {
+		failure := fmt.Errorf("ошибка сети")
+		if auth {
+			failure = fmt.Errorf("подготовка: %w", ErrAuthRequired)
+		}
+		f := &preparationRetry{attempts: map[string]int{}, failure: failure}
+		last := map[string]Event{}
+		Run(context.Background(), []model.Job{{ID: "saved"}, {ID: "expired"}}, 1, f, func(e Event) { last[e.JobID] = e })
+		if f.attempts["saved"] != 1 || last["saved"].State != Saved {
+			t.Fatal("Готовое задание повторено", f.attempts)
+		}
+		if auth && (f.attempts["expired"] != 2 || last["expired"].State != Saved || last["expired"].Detail != "") {
+			t.Fatal("Повтор после входа не сбросил ошибку", last, f.attempts)
+		}
+		if !auth && (f.attempts["expired"] != 1 || last["expired"].State != Failed) {
+			t.Fatal("Обычная ошибка ошибочно вызвала восстановление входа", last, f.attempts)
+		}
+	}
+}
 func TestExpiredSessionRetriesOnlyCurrentJob(t *testing.T) {
 	f := &authRetry{}
 	states := []string{}

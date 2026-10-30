@@ -21,6 +21,10 @@ jobs:
         run: |
           go test ./...
           go vet ./...
+      - name: Проверки авторизации в Chrome на локальном HTTP-сервере
+        env:
+          FSSP_BROWSER_TESTS: '1'
+        run: go test ./internal/browser -count=1 -timeout=5m
       - name: Сборка
         env:
           FSSP_SHARED_PATH: ${{ secrets.FSSP_SHARED_PATH }}

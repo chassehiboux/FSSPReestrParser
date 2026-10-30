@@ -213,6 +213,8 @@ type App struct {
 	updateStatus       *walk.Label
 	updateProgress     *walk.ProgressBar
 	statusPlaceholder  *walk.Composite
+	guideButton        *walk.PushButton
+	guideOpen          bool
 }
 
 func Run(store *settings.Store, local, ready string, skipUpdate bool) error {
@@ -222,6 +224,7 @@ func Run(store *settings.Store, local, ready string, skipUpdate bool) error {
 	var separate *walk.Composite
 	var more *walk.PushButton
 	err := (MainWindow{AssignTo: &a.window, Title: "Реестры ФССП", Icon: appIcon(), MinSize: Size{Width: 360, Height: 330}, Size: Size{Width: 380, Height: 360}, Font: Font{Family: "Segoe UI", PointSize: 10}, Layout: HBox{Alignment: AlignHNearVNear, Margins: Margins{Left: 20, Top: 16, Right: 20, Bottom: 16}, Spacing: 16}, Children: []Widget{Composite{Alignment: AlignHNearVNear, MinSize: Size{Width: 320}, MaxSize: Size{Width: 320}, Layout: VBox{Spacing: 14}, Children: []Widget{
+		PushButton{AssignTo: &a.guideButton, Text: "Инструкция", Enabled: false, OnClicked: a.showGuide},
 		Label{Text: "Реестры ФССП", Font: Font{Family: "Segoe UI", PointSize: 20, Bold: true}},
 		Label{Text: "Выберите исходный файл и период."},
 		ComboBox{AssignTo: &a.profiles, Visible: false},
@@ -310,6 +313,7 @@ func (a *App) error(e error) {
 	walk.MsgBox(a.window, "Не удалось выполнить операцию", e.Error(), walk.MsgBoxIconError)
 }
 func (a *App) enable() {
+	a.guideButton.SetEnabled(!a.initializing && !a.updating)
 	a.pipelineButton.SetEnabled(!a.initializing && len(a.cfg.Profiles) > 0 && !a.updating && (!a.running || a.pipeline != nil && a.pipeline.running))
 	a.start.SetEnabled(len(a.cfg.Profiles) > 0 && !a.updating && (!a.running || a.export != nil && a.export.running))
 	a.registerButton.SetEnabled(!a.initializing && !a.updating && (!a.running || a.register != nil && a.register.running))
@@ -344,6 +348,9 @@ func (a *App) initialize() {
 		a.enable()
 		if warning != "" {
 			walk.MsgBox(a.window, "Используются сохранённые настройки", warning, walk.MsgBoxIconWarning)
+		}
+		if !guideCompleted(a.local) {
+			a.showGuide()
 		}
 	})
 }

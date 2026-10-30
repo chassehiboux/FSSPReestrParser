@@ -14,6 +14,7 @@ import (
 
 	"github.com/chassehiboux/FSSPReestrParser/internal/model"
 	"github.com/chassehiboux/FSSPReestrParser/internal/platform"
+	"github.com/chassehiboux/FSSPReestrParser/internal/queue"
 	"github.com/go-rod/rod/lib/proto"
 )
 
@@ -26,6 +27,70 @@ func TestCredentialClassification(t *testing.T) {
 	}
 	if !LoginURL("https://kgn.pyramid.vostok-electra.ru/login/pyrsso") {
 		t.Fatal("Не распознан переход на вход")
+	}
+}
+
+func TestSlowCredentialEntryAndRepeatedRejectionWithoutNavigation(t *testing.T) {
+	if os.Getenv("FSSP_BROWSER_TESTS") != "1" {
+		t.Skip("set FSSP_BROWSER_TESTS=1 for browser integration")
+	}
+	var posts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if r.Method == "POST" {
+			posts.Add(1)
+			r.ParseForm()
+			fmt.Fprint(w, r.FormValue("password") == "correct")
+			return
+		}
+		fmt.Fprint(w, `<form><div class="validation-summary-errors"></div><input id="Input_UserName"><input id="Input_Password"><button id="login-submit" type="submit">Войти</button></form><script>document.querySelector('form').onsubmit=async ev=>{ev.preventDefault();const body=new URLSearchParams({password:document.querySelector('#Input_Password').value});const result=await (await fetch('/',{method:'POST',body})).text();if(result==='true')document.body.innerHTML='<button class="btn-cities">Департамент</button>';else document.querySelector('.validation-summary-errors').textContent='Неверное имя пользователя или пароль.';};</script>`)
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	prompts := 0
+	e, err := New(ctx, t.TempDir(), "", true, func(ctx context.Context, reason, user string) (Credentials, error) {
+		prompts++
+		if !CredentialRejected(reason) {
+			t.Errorf("Не показана причина отказа: %s", reason)
+		}
+		// Каждый ввод дольше всего бюджета ответа сервера: пользователь может ждать.
+		if err := pause(ctx, 2300*time.Millisecond); err != nil {
+			return Credentials{}, err
+		}
+		password := "wrong-again"
+		if prompts == 2 {
+			password = "correct"
+		}
+		return Credentials{Username: "test", Password: password}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	e.credentials = Credentials{Username: "test", Password: "wrong"}
+	p, err := e.browser.Page(proto.TargetCreateTarget{URL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	p.WaitLoad()
+	if err = e.ensureLoginWithin(ctx, p, model.Base{}, 2*time.Second); err != nil {
+		t.Fatal("Повторный ввод не продолжил вход", err)
+	}
+	if prompts != 2 || posts.Load() != 3 {
+		t.Fatalf("prompts=%d posts=%d", prompts, posts.Load())
+	}
+	// Сервис снова вернул форму входа: сохранённые в памяти данные восстанавливают вход.
+	if err = p.Navigate(server.URL); err != nil {
+		t.Fatal(err)
+	}
+	p.WaitLoad()
+	if err = waitGrid(p, false); !errors.Is(err, queue.ErrAuthRequired) {
+		t.Fatal("Возврат на вход не распознан", err)
+	}
+	if err = e.ensureLoginWithin(ctx, p, model.Base{}, 2*time.Second); err != nil || prompts != 2 || posts.Load() != 4 {
+		t.Fatal("Восстановление входа", err, prompts, posts.Load())
 	}
 }
 

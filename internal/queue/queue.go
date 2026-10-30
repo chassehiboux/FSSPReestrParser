@@ -4,6 +4,7 @@ package queue
 import (
 	"archive/zip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -43,6 +44,10 @@ type Pending struct {
 type Backend interface {
 	Begin(context.Context, model.Job) (*Pending, error)
 }
+
+// ErrAuthRequired разрешает повтор подготовки только при подтверждённом возврате на вход.
+var ErrAuthRequired = errors.New("Требуется восстановить авторизацию")
+
 type Sink func(Event)
 
 func Run(ctx context.Context, jobs []model.Job, parallel int, backend Backend, emit Sink) {
@@ -86,6 +91,9 @@ func runJob(ctx context.Context, job model.Job, backend Backend, send Sink) {
 		send(Event{JobID: job.ID, State: Preparing, Detail: message})
 		p, e := backend.Begin(ctx, job)
 		if e != nil {
+			if attempt == 0 && ctx.Err() == nil && errors.Is(e, ErrAuthRequired) {
+				continue
+			}
 			state := Failed
 			if ctx.Err() != nil {
 				if ctx.Err() == context.Canceled {
