@@ -17,6 +17,8 @@ type operation struct {
 	running   bool
 	withTable bool
 	cancel    func()
+	retry     *walk.PushButton
+	retryFunc func()
 }
 
 func appIcon() any {
@@ -46,20 +48,23 @@ func newOperation(a *App, title string, withTable bool, openFolder func(), stage
 		}
 		children = append(children, TableView{AssignTo: &op.table, Model: op.model, MinSize: Size{Width: 900, Height: tableHeight}, AlternatingRowBG: true, LastColumnStretched: true, ColumnsSizable: true, StyleCell: func(style *walk.CellStyle) {
 			if stageTable {
-				if style.Col() == 2 && style.Row() >= 0 && style.Row() < len(op.model.stages) {
-					switch op.model.stages[style.Row()].State {
+				if style.Col() == 2 && style.Row() >= 0 && style.Row() < op.model.RowCount() {
+					switch op.model.stageState(style.Row()) {
 					case "Готово", "Сохранён":
 						style.BackgroundColor = walk.RGB(208, 239, 218)
 						style.TextColor = walk.RGB(24, 89, 45)
 					case "Ошибка":
 						style.BackgroundColor = walk.RGB(252, 218, 218)
 						style.TextColor = walk.RGB(151, 28, 28)
-					case "Выполняется":
+					case "Выполняется", queue.Generating:
 						style.BackgroundColor = walk.RGB(255, 240, 187)
 						style.TextColor = walk.RGB(114, 79, 0)
-					case "Подготовлен":
+					case "Подготовлен", queue.Downloading:
 						style.BackgroundColor = walk.RGB(207, 232, 255)
 						style.TextColor = walk.RGB(20, 76, 130)
+					case queue.Preparing:
+						style.BackgroundColor = walk.RGB(228, 220, 249)
+						style.TextColor = walk.RGB(83, 51, 126)
 					default:
 						style.BackgroundColor = walk.RGB(238, 238, 238)
 						style.TextColor = walk.RGB(100, 100, 100)
@@ -99,7 +104,11 @@ func newOperation(a *App, title string, withTable bool, openFolder func(), stage
 			}
 		}, Columns: columns})
 	}
-	buttons := []Widget{PushButton{AssignTo: &op.stop, Text: "Остановить", Enabled: false, Visible: withTable, OnClicked: func() {
+	buttons := []Widget{PushButton{AssignTo: &op.retry, Text: "Продолжить", Visible: false, OnClicked: func() {
+		if op.retryFunc != nil {
+			op.retryFunc()
+		}
+	}}, PushButton{AssignTo: &op.stop, Text: "Остановить", Enabled: false, Visible: withTable, OnClicked: func() {
 		if op.cancel != nil {
 			op.cancel()
 			op.status.SetText("Остановка…")

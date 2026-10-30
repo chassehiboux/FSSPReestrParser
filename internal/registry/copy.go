@@ -16,6 +16,12 @@ func copyFile(ctx context.Context, src, dst string) error {
 	if err != nil {
 		return err
 	}
+	complete := false
+	defer func() {
+		if !complete {
+			os.Remove(dst)
+		}
+	}()
 	buf := make([]byte, 128*1024)
 	for {
 		if err = ctx.Err(); err != nil {
@@ -42,5 +48,6 @@ func copyFile(ctx context.Context, src, dst string) error {
 	if err != nil {
 		return err
 	}
+	complete = closeErr == nil
 	return closeErr
 }

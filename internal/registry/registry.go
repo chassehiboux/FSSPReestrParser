@@ -38,6 +38,9 @@ type Options struct {
 	Month                            time.Month
 	Year                             int
 	SkipAnalytics, SkipCaseRegisters bool
+	// Параметры общего запуска. nil ExportFiles означает прежний выбор всей папки.
+	OutputDir   string
+	ExportFiles []string
 }
 type Event struct {
 	Stage                 int
@@ -165,6 +168,77 @@ func reserve(parent string, names []string) (string, error) {
 	}
 }
 
+func enabledNames(opt Options) ([]string, error) {
+	names, err := Names(opt.Month, opt.Year)
+	if err != nil {
+		return nil, err
+	}
+	out := []string{}
+	for i, name := range names {
+		if !(i == 3 && opt.SkipAnalytics || i >= 4 && opt.SkipCaseRegisters) {
+			out = append(out, name)
+		}
+	}
+	return out, nil
+}
+
+// PrepareOutput резервирует отдельный комплект до начала общей выгрузки.
+func PrepareOutput(opt Options) (string, error) {
+	names, err := enabledNames(opt)
+	if err != nil {
+		return "", err
+	}
+	source, err := filepath.Abs(opt.Source)
+	if err != nil {
+		return "", err
+	}
+	return reserve(filepath.Dir(source), names)
+}
+
+// CheckSource проверяет исходник до отправки длительных запросов выгрузки.
+func CheckSource(ctx context.Context, path string) error {
+	found := false
+	err := scanBook(ctx, path, func(_ int, row []value, _ bool) error {
+		if found {
+			return nil
+		}
+		found = true
+		_, err := headers(row, SourceFields)
+		return err
+	})
+	if err == nil && !found {
+		return fmt.Errorf("исходный файл пуст")
+	}
+	return err
+}
+
+// CheckExport не позволяет принять техническую книгу или пустую неподтверждённую выгрузку.
+func CheckExport(ctx context.Context, path string, skipCase bool) error {
+	found, rows := false, 0
+	err := scanBook(ctx, path, func(_ int, row []value, _ bool) error {
+		if !found {
+			found = true
+			required := exportFields
+			if skipCase {
+				required = exportFields[:5]
+			}
+			_, err := headers(row, required)
+			return err
+		}
+		for _, v := range row {
+			if !v.empty() {
+				rows++
+				break
+			}
+		}
+		return nil
+	})
+	if err == nil && (!found || rows == 0) {
+		err = fmt.Errorf("выгрузка не содержит строк; пустой отбор не подтверждён Пирамидой")
+	}
+	return err
+}
+
 func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err error) {
 	stage := 0
 	send := func(state, detail string, checked, total, found int) {
@@ -203,14 +277,50 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 			outputNames = append(outputNames, name)
 		}
 	}
-	dir, err := reserve(filepath.Dir(sourcePath), outputNames)
+	dir := opt.OutputDir
+	owned := dir == ""
+	if owned {
+		dir, err = reserve(filepath.Dir(sourcePath), outputNames)
+	} else {
+		dir, err = filepath.Abs(dir)
+		if err == nil {
+			var info os.FileInfo
+			info, err = os.Stat(dir)
+			if err == nil && !info.IsDir() {
+				err = fmt.Errorf("папка результата занята файлом")
+			}
+		}
+		for _, name := range outputNames {
+			if err != nil {
+				break
+			}
+			path := filepath.Join(dir, name)
+			if len(utf16.Encode([]rune(path))) > 218 {
+				err = fmt.Errorf("путь результата длиннее 218 символов: %s", path)
+				break
+			}
+			if _, e := os.Lstat(path); e == nil {
+				err = fmt.Errorf("файл результата уже существует: %s", name)
+			} else if !os.IsNotExist(e) {
+				err = e
+			}
+		}
+	}
 	if err != nil {
 		return result, err
 	}
 	success := false
+	published := []string{}
 	defer func() {
 		if !success {
-			cleanup := os.RemoveAll(dir)
+			var cleanup error
+			if owned {
+				cleanup = os.RemoveAll(dir)
+			} else {
+				for _, path := range published {
+					cleanup = errors.Join(cleanup, os.Remove(path))
+				}
+			}
 			if cleanup != nil {
 				err = errors.Join(err, fmt.Errorf("не удалось удалить незавершённую папку %s: %w", dir, cleanup))
 			}
@@ -274,17 +384,27 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 		return result, fmt.Errorf("исходный файл пуст")
 	}
 	result.Total = len(rows)
-	entries, err := os.ReadDir(exportPath)
-	if err != nil {
-		return result, err
-	}
 	exports := []string{}
-	for _, e := range entries {
-		if !e.IsDir() && strings.EqualFold(filepath.Ext(e.Name()), ".xlsx") && !strings.HasPrefix(e.Name(), "~$") {
-			exports = append(exports, filepath.Join(exportPath, e.Name()))
+	if opt.ExportFiles == nil {
+		entries, e := os.ReadDir(exportPath)
+		if e != nil {
+			return result, e
+		}
+		for _, e := range entries {
+			if !e.IsDir() && strings.EqualFold(filepath.Ext(e.Name()), ".xlsx") && !strings.HasPrefix(e.Name(), "~$") {
+				exports = append(exports, filepath.Join(exportPath, e.Name()))
+			}
+		}
+	} else {
+		for _, file := range opt.ExportFiles {
+			full, e := filepath.Abs(file)
+			if e != nil || !strings.EqualFold(filepath.Dir(full), exportPath) || !strings.EqualFold(filepath.Ext(full), ".xlsx") {
+				return result, fmt.Errorf("некорректный путь подтверждённой выгрузки: %s", file)
+			}
+			exports = append(exports, full)
 		}
 	}
-	if len(exports) == 0 {
+	if len(exports) == 0 && opt.ExportFiles == nil {
 		return result, fmt.Errorf("в папке нет XLSX-файлов выгрузки ОВЗИД")
 	}
 	for i, file := range exports {
@@ -397,6 +517,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 		if err = copyFile(ctx, filepath.Join(tmp, name), filepath.Join(dir, name)); err != nil {
 			return result, err
 		}
+		published = append(published, filepath.Join(dir, name))
 	}
 	if err = ctx.Err(); err != nil {
 		return result, err

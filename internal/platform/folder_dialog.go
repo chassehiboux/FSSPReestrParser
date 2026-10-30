@@ -15,6 +15,19 @@ import (
 var RegistrySourceRoot string
 
 func ChooseFolder(owner uintptr, title, initialDir string) (string, bool, error) {
+	return choosePath(owner, title, initialDir, true)
+}
+
+// ChooseSourceFile принудительно открывает папку исходников через SetFolder,
+// а не начальный каталог старого диалога, который Windows может заменить последним использованным.
+func ChooseSourceFile(owner uintptr, title string) (string, bool, error) {
+	if RegistrySourceRoot == "" {
+		return "", false, fmt.Errorf("не настроена начальная папка исходных реестров")
+	}
+	return choosePath(owner, title, RegistrySourceRoot, false)
+}
+
+func choosePath(owner uintptr, title, initialDir string, folders bool) (string, bool, error) {
 	hr := win.CoInitializeEx(nil, 2)
 	if hr < 0 {
 		return "", false, fmt.Errorf("не удалось открыть выбор папки: COM 0x%08x", uint32(hr))
@@ -40,9 +53,26 @@ func ChooseFolder(owner uintptr, title, initialDir string) (string, bool, error)
 	if r := call(10, uintptr(unsafe.Pointer(&flags))); int32(r) < 0 {
 		return "", false, fmt.Errorf("параметры выбора папки: 0x%08x", r)
 	}
-	// FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR.
-	if r := call(9, uintptr(flags|0x20|0x40|0x800|0x8)); int32(r) < 0 {
+	// FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR.
+	flags |= 0x40 | 0x800 | 0x8
+	if folders {
+		flags |= 0x20
+	} else {
+		flags = flags&^0x20 | 0x1000
+	}
+	if r := call(9, uintptr(flags)); int32(r) < 0 {
 		return "", false, fmt.Errorf("режим выбора папки: 0x%08x", r)
+	}
+	if !folders {
+		name, _ := windows.UTF16PtrFromString("Книга Excel (*.xlsx)")
+		pattern, _ := windows.UTF16PtrFromString("*.xlsx")
+		type filter struct{ Name, Pattern *uint16 }
+		spec := filter{name, pattern}
+		r := call(4, 1, uintptr(unsafe.Pointer(&spec)))
+		runtime.KeepAlive(spec)
+		if int32(r) < 0 {
+			return "", false, fmt.Errorf("фильтр исходных файлов: 0x%08x", r)
+		}
 	}
 	caption, err := windows.UTF16PtrFromString(title)
 	if err != nil {
@@ -70,6 +100,8 @@ func ChooseFolder(owner uintptr, title, initialDir string) (string, bool, error)
 			if int32(setResult) < 0 {
 				return "", false, fmt.Errorf("начальная папка: 0x%08x", setResult)
 			}
+		} else if !folders {
+			return "", false, fmt.Errorf("не удалось открыть папку исходников. Проверьте доступ к сетевой папке: 0x%08x", uint32(r))
 		}
 	}
 	if r := call(3, owner); r == 0x800704c7 {

@@ -23,18 +23,60 @@ import (
 
 type statusModel struct {
 	walk.TableModelBase
-	jobs   []model.Job
-	events map[string]queue.Event
-	stages []registry.Event
+	jobs       []model.Job
+	events     map[string]queue.Event
+	stages     []registry.Event
+	mixed      bool
+	stageNames []string
 }
 
 func (m *statusModel) RowCount() int {
+	if m.mixed {
+		return len(m.jobs) + len(m.stages)
+	}
 	if m.stages != nil {
 		return len(m.stages)
 	}
 	return len(m.jobs)
 }
 func (m *statusModel) Value(row, col int) any {
+	if m.mixed {
+		if row < len(m.jobs) {
+			j := m.jobs[row]
+			e := m.events[j.ID]
+			parts := []string{}
+			for _, c := range j.Conditions {
+				parts = append(parts, c.Label)
+			}
+			switch col {
+			case 0:
+				return row + 1
+			case 1:
+				return "Выгрузка: " + j.Department.Name + " · " + strings.Join(parts, " И ")
+			case 2:
+				return e.State
+			case 3:
+				if e.State == queue.Downloading && e.Total > 0 {
+					return fmt.Sprintf("%.1f / %.1f МБ", float64(e.Bytes)/1048576, float64(e.Total)/1048576)
+				}
+				return e.Detail
+			}
+			return ""
+		}
+		i := row - len(m.jobs)
+		e := m.stages[i]
+		switch col {
+		case 0:
+			return row + 1
+		case 1:
+			return m.stageNames[i]
+		case 2:
+			return e.State
+		case 3:
+			return e.Detail
+		}
+		return ""
+	}
 	if m.stages != nil {
 		e := m.stages[row]
 		switch col {
@@ -73,6 +115,22 @@ func (m *statusModel) Value(row, col int) any {
 	return ""
 }
 
+func (m *statusModel) stageState(row int) string {
+	if row < 0 {
+		return ""
+	}
+	if m.mixed {
+		if row < len(m.jobs) {
+			return m.events[m.jobs[row].ID].State
+		}
+		row -= len(m.jobs)
+	}
+	if row < len(m.stages) {
+		return m.stages[row].State
+	}
+	return ""
+}
+
 type App struct {
 	window             *walk.MainWindow
 	start, admin, stop *walk.PushButton
@@ -104,18 +162,41 @@ type App struct {
 	registerButton     *walk.PushButton
 	registerOutput     string
 	initializing       bool
+	pipelineButton     *walk.PushButton
+	pipeline           *operation
 }
 
 func Run(store *settings.Store, local, ready string, skipUpdate bool) error {
 	a := &App{store: store, local: local, skipUpdate: skipUpdate, ready: ready, initializing: true}
 	a.lifecycle, a.lifecycleCancel = context.WithCancel(context.Background())
 	defer a.lifecycleCancel()
+	var separate *walk.Composite
+	var more *walk.PushButton
 	err := (MainWindow{AssignTo: &a.window, Title: "Реестры ФССП", Icon: appIcon(), MinSize: Size{Width: 640, Height: 330}, Size: Size{Width: 720, Height: 360}, Font: Font{Family: "Segoe UI", PointSize: 10}, Layout: VBox{Margins: Margins{Left: 24, Top: 20, Right: 24, Bottom: 20}, Spacing: 14}, Children: []Widget{
 		Label{Text: "Реестры ФССП", Font: Font{Family: "Segoe UI", PointSize: 20, Bold: true}},
-		Label{Text: "Выгрузите данные ОВЗИД для подготовки реестров по извещениям."},
+		Label{Text: "Выберите исходный файл и период — программа выгрузит ОВЗИД и создаст реестры."},
 		ComboBox{AssignTo: &a.profiles, Visible: false},
-		PushButton{AssignTo: &a.start, Text: "Выгрузить ОВЗИД", Enabled: false, MinSize: Size{Width: 300, Height: 44}, OnClicked: a.startExport},
-		PushButton{AssignTo: &a.registerButton, Text: "Создать реестры возбуждения и окончания", Enabled: false, MinSize: Size{Width: 300, Height: 44}, OnClicked: a.startRegisters},
+		PushButton{AssignTo: &a.pipelineButton, Text: "Выгрузить ОВЗИД и создать реестры", Enabled: false, MinSize: Size{Width: 300, Height: 48}, OnClicked: a.startPipeline},
+		PushButton{AssignTo: &more, Text: "Отдельные операции ▸", OnClicked: func() {
+			visible := !separate.Visible()
+			separate.SetVisible(visible)
+			if visible {
+				more.SetText("Отдельные операции ▾")
+			} else {
+				more.SetText("Отдельные операции ▸")
+			}
+			size := a.window.Size()
+			if visible {
+				size.Height += 110
+			} else {
+				size.Height -= 110
+			}
+			a.window.SetSize(size)
+		}},
+		Composite{AssignTo: &separate, Visible: false, Layout: VBox{Spacing: 8}, Children: []Widget{
+			PushButton{AssignTo: &a.start, Text: "Только выгрузить ОВЗИД", Enabled: false, MinSize: Size{Width: 300, Height: 40}, OnClicked: a.startExport},
+			PushButton{AssignTo: &a.registerButton, Text: "Только создать реестры из готовой выгрузки", Enabled: false, MinSize: Size{Width: 300, Height: 40}, OnClicked: a.startRegisters},
+		}},
 		Label{AssignTo: &a.status, Text: "Проверка обновлений…"},
 		Composite{AssignTo: &a.host, Visible: false, StretchFactor: 1, Layout: VBox{}},
 		Composite{Layout: HBox{}, Children: []Widget{PushButton{AssignTo: &a.admin, Text: "Администрирование", Visible: platform.IsAdmin(), Enabled: false, OnClicked: a.openAdmin}, PushButton{AssignTo: &a.updateButton, Text: "Обновить", Visible: false, OnClicked: a.runPendingUpdate}, HSpacer{}, Label{Text: "Версия " + update.Version}}},
@@ -168,6 +249,7 @@ func (a *App) error(e error) {
 	walk.MsgBox(a.window, "Не удалось выполнить операцию", e.Error(), walk.MsgBoxIconError)
 }
 func (a *App) enable() {
+	a.pipelineButton.SetEnabled(!a.initializing && len(a.cfg.Profiles) > 0 && !a.updating && (!a.running || a.pipeline != nil && a.pipeline.running))
 	a.start.SetEnabled(len(a.cfg.Profiles) > 0 && !a.updating && (!a.running || a.export != nil && a.export.running))
 	a.registerButton.SetEnabled(!a.initializing && !a.updating && (!a.running || a.register != nil && a.register.running))
 	a.admin.SetEnabled(platform.IsAdmin() && len(a.cfg.Profiles) > 0 && !a.running && !a.updating)
@@ -220,7 +302,7 @@ func (a *App) prompt(ctx context.Context, message, username string) (browser.Cre
 		var remember *walk.CheckBox
 		var ok, cancel *walk.PushButton
 		var result browser.Credentials
-		code, err := (Dialog{AssignTo: &dlg, Title: "Вход в Пирамиду", MinSize: Size{Width: 460, Height: 280}, DefaultButton: &ok, CancelButton: &cancel, Layout: VBox{}, Children: []Widget{Label{Text: message}, Label{Text: "Логин"}, LineEdit{AssignTo: &login, Text: username}, Label{Text: "Пароль"}, LineEdit{AssignTo: &password, PasswordMode: true}, CheckBox{AssignTo: &remember, Text: "Запомнить на этом компьютере"}, Composite{Layout: HBox{}, Children: []Widget{HSpacer{}, PushButton{AssignTo: &ok, Text: "Войти", OnClicked: func() {
+		code, err := (Dialog{AssignTo: &dlg, Title: "Вход в Пирамиду", MinSize: Size{Width: 560, Height: 330}, DefaultButton: &ok, CancelButton: &cancel, Layout: VBox{}, Children: []Widget{Label{Text: message}, Label{Text: "Введите те же логин и пароль, что и при входе в учётную запись Windows.\nЛогин указывайте без vostok\\ — только имя пользователя."}, Label{Text: "Логин"}, LineEdit{AssignTo: &login, Text: username}, Label{Text: "Пароль"}, LineEdit{AssignTo: &password, PasswordMode: true}, CheckBox{AssignTo: &remember, Text: "Запомнить на этом компьютере"}, Composite{Layout: HBox{}, Children: []Widget{HSpacer{}, PushButton{AssignTo: &ok, Text: "Войти", OnClicked: func() {
 			if strings.TrimSpace(login.Text()) == "" || password.Text() == "" {
 				walk.MsgBox(dlg, "Вход", "Введите логин и пароль", walk.MsgBoxIconWarning)
 				return

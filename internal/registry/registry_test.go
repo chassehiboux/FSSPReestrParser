@@ -97,6 +97,41 @@ func TestOptionalOutputs(t *testing.T) {
 		}
 	}
 }
+
+func TestExplicitOutputPreservesInputsOnFailure(t *testing.T) {
+	opt := setup(t)
+	dir, err := PrepareOutput(opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := filepath.Join(dir, "Исх.")
+	if err = os.Mkdir(inputs, 0700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(inputs, "сохранённая выгрузка.xlsx")
+	if err = os.WriteFile(marker, []byte("не трогать"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	opt.OutputDir = dir
+	opt.ExportFiles = []string{} // Подтверждено, что все отборы пустые.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err = Run(ctx, opt, func(ev Event) {
+		if ev.Stage == 1 && ev.State == "Подготовлен" {
+			cancel()
+		}
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "не трогать" {
+		t.Fatal("потеряны выгрузки при ошибке реестров", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 {
+		t.Fatal("остался неполный реестр", err)
+	}
+}
 func readRows(t *testing.T, path string) [][]string {
 	t.Helper()
 	f, e := excelize.OpenFile(path)

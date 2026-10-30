@@ -16,7 +16,12 @@ import (
 	"github.com/lxn/win"
 )
 
-func chooseRegisters(owner walk.Form) (registry.Options, bool, error) {
+func chooseRegisters(owner walk.Form, presetSource ...string) (registry.Options, bool, error) {
+	unified := len(presetSource) > 0
+	initialSource := ""
+	if unified {
+		initialSource = presetSource[0]
+	}
 	var dlg *walk.Dialog
 	var source, exports *walk.LineEdit
 	var year *walk.NumberEdit
@@ -31,6 +36,10 @@ func chooseRegisters(owner walk.Form) (registry.Options, bool, error) {
 			return
 		}
 		s, se := os.Stat(source.Text())
+		if unified {
+			ok.SetEnabled(se == nil && !s.IsDir() && strings.EqualFold(filepath.Ext(source.Text()), ".xlsx"))
+			return
+		}
 		d, de := os.Stat(exports.Text())
 		ok.SetEnabled(se == nil && !s.IsDir() && strings.EqualFold(filepath.Ext(source.Text()), ".xlsx") && de == nil && d.IsDir())
 	}
@@ -67,17 +76,16 @@ func chooseRegisters(owner walk.Form) (registry.Options, bool, error) {
 			Label{AssignTo: &selectedPeriod, Text: "", Font: Font{Family: "Segoe UI", PointSize: 10, Bold: true}},
 		}},
 		Label{Text: "Исходный файл с извещениями:"},
-		Composite{Layout: HBox{}, Children: []Widget{LineEdit{AssignTo: &source, ReadOnly: true, StretchFactor: 1}, PushButton{Text: "Выбрать файл…", OnClicked: func() {
-			f := walk.FileDialog{Title: "Исходный файл", Filter: "Книга Excel (*.xlsx)|*.xlsx", InitialDirPath: platform.RegistrySourceRoot}
-			if accepted, e := f.ShowOpen(dlg); e != nil {
+		Composite{Layout: HBox{}, Children: []Widget{LineEdit{AssignTo: &source, Text: initialSource, ReadOnly: true, StretchFactor: 1}, PushButton{Text: "Выбрать файл…", OnClicked: func() {
+			if path, accepted, e := platform.ChooseSourceFile(uintptr(dlg.Handle()), "Исходный файл"); e != nil {
 				walk.MsgBox(dlg, "Выбор файла", e.Error(), walk.MsgBoxIconError)
 			} else if accepted {
-				source.SetText(f.FilePath)
+				source.SetText(path)
 				validate()
 			}
 		}}}},
-		Label{Text: "Папка с выгрузкой ОВЗИД:"},
-		Composite{Layout: HBox{}, Children: []Widget{LineEdit{AssignTo: &exports, ReadOnly: true, StretchFactor: 1}, PushButton{Text: "Выбрать папку…", OnClicked: func() {
+		Label{Text: "Папка с выгрузкой ОВЗИД:", Visible: !unified},
+		Composite{Visible: !unified, Layout: HBox{}, Children: []Widget{LineEdit{AssignTo: &exports, ReadOnly: true, StretchFactor: 1}, PushButton{Text: "Выбрать папку…", OnClicked: func() {
 			downloads, e := platform.Downloads()
 			if e != nil {
 				walk.MsgBox(dlg, "Выбор папки", e.Error(), walk.MsgBoxIconError)
@@ -103,6 +111,7 @@ func chooseRegisters(owner walk.Form) (registry.Options, bool, error) {
 	}
 	defer dlg.Dispose()
 	refreshPeriod()
+	validate()
 	code := dlg.Run()
 	return result, code == walk.DlgCmdOK, nil
 }
