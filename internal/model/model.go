@@ -56,11 +56,13 @@ type Profile struct {
 	Blocks      []Block      `json:"blocks"`
 }
 type Settings struct {
-	Schema   int       `json:"schema"`
-	Revision int       `json:"revision"`
-	Headless bool      `json:"headless"`
-	Parallel int       `json:"parallel"`
-	Profiles []Profile `json:"profiles"`
+	Schema            int       `json:"schema"`
+	Revision          int       `json:"revision"`
+	Headless          bool      `json:"headless"`
+	Parallel          int       `json:"parallel"`
+	Profiles          []Profile `json:"profiles"`
+	SkipAnalytics     bool      `json:"skip_analytics,omitempty"`
+	SkipCaseRegisters bool      `json:"skip_case_registers,omitempty"`
 }
 type Condition struct {
 	Key   string

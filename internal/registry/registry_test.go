@@ -60,6 +60,43 @@ func setup(t *testing.T) Options {
 	})
 	return Options{Source: source, Exports: exports, Month: time.September, Year: 2026}
 }
+
+func TestOptionalOutputs(t *testing.T) {
+	for _, analytics := range []bool{false, true} {
+		for _, cases := range []bool{false, true} {
+			opt := setup(t)
+			opt.SkipAnalytics, opt.SkipCaseRegisters = analytics, cases
+			if cases {
+				fixture(t, filepath.Join(opt.Exports, "Выгрузка.xlsx"), exportFields[:5], [][]any{{"Иванов Иван Иванович", "A", 100.25, "АО", "12.12.1980"}})
+			}
+			var skipped int
+			r, err := Run(context.Background(), opt, func(ev Event) {
+				if ev.State == "Пропущен" {
+					skipped++
+				}
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := 6
+			if analytics {
+				want--
+			}
+			if cases {
+				want -= 2
+			}
+			entries, err := os.ReadDir(r.Dir)
+			if err != nil || len(entries) != want || len(r.Files) != want || skipped != 6-want || r.Found != 2 {
+				t.Fatalf("аналитика=%v дела=%v: %+v файлы=%d пропуски=%d ошибка=%v", analytics, cases, r, len(entries), skipped, err)
+			}
+			for _, file := range r.Files {
+				if analytics && strings.Contains(file, "Аналитика") || cases && strings.Contains(file, "по_делу") {
+					t.Fatal("создан отключённый файл", file)
+				}
+			}
+		}
+	}
+}
 func readRows(t *testing.T, path string) [][]string {
 	t.Helper()
 	f, e := excelize.OpenFile(path)

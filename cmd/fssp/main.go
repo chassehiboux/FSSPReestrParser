@@ -29,6 +29,7 @@ func main() {
 		}
 		return
 	}
+	_ = platform.RememberExecutable()
 	local, err := platform.LocalDir()
 	if err != nil {
 		walk.MsgBox(nil, "Ошибка", err.Error(), walk.MsgBoxIconError)

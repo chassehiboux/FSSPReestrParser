@@ -152,6 +152,20 @@ func (a *App) startRegisters() {
 	a.enable()
 	go func() {
 		defer cancel()
+		cfg, warning, settingsErr := a.store.Load()
+		if settingsErr == nil {
+			opt.SkipAnalytics = cfg.SkipAnalytics
+			opt.SkipCaseRegisters = cfg.SkipCaseRegisters
+		} else {
+			warning = "Настройки не обновлены; используются параметры, загруженные при запуске. " + settingsErr.Error()
+			opt.SkipAnalytics = a.cfg.SkipAnalytics
+			opt.SkipCaseRegisters = a.cfg.SkipCaseRegisters
+		}
+		if warning != "" {
+			a.window.Synchronize(func() {
+				walk.MsgBox(a.window, "Настройки создания реестров", warning, walk.MsgBoxIconWarning)
+			})
+		}
 		result, runErr := registry.Run(ctx, opt, func(e registry.Event) {
 			a.window.Synchronize(func() {
 				op.model.stages[e.Stage] = e

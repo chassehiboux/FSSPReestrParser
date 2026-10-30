@@ -60,6 +60,23 @@ func AtomicJSON(path string, value any) error {
 func (s *Store) Load() (model.Settings, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	value, warning, err := s.loadCommon()
+	personal, personalErr := Read(filepath.Join(s.Local, "personal-settings.json"))
+	if personalErr == nil {
+		if err == nil {
+			personal.Revision = value.Revision
+		}
+		if err != nil {
+			warning = "Общие настройки недоступны; используется личный профиль. " + err.Error()
+		}
+		return personal, warning, nil
+	}
+	if !os.IsNotExist(personalErr) && err == nil {
+		warning = "Личные настройки не прочитаны; используются общие. " + personalErr.Error() + " " + warning
+	}
+	return value, warning, err
+}
+func (s *Store) loadCommon() (model.Settings, string, error) {
 	value, e := Read(s.Shared)
 	if e == nil {
 		if cacheErr := AtomicJSON(filepath.Join(s.Local, "settings.json"), value); cacheErr != nil {
@@ -72,6 +89,30 @@ func (s *Store) Load() (model.Settings, string, error) {
 		return cached, "", fmt.Errorf("Общие настройки недоступны, корректной локальной копии нет: %w", e)
 	}
 	return cached, "Общие настройки недоступны. Используется сохранённая версия. " + e.Error(), nil
+}
+func (s *Store) PersonalActive() bool {
+	_, err := Read(filepath.Join(s.Local, "personal-settings.json"))
+	return err == nil
+}
+func (s *Store) SavePersonal(value model.Settings) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := value.Validate(); err != nil {
+		return err
+	}
+	return AtomicJSON(filepath.Join(s.Local, "personal-settings.json"), value)
+}
+func (s *Store) UseCommon() (model.Settings, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value, warning, err := s.loadCommon()
+	if err != nil {
+		return value, warning, err
+	}
+	if err = os.Remove(filepath.Join(s.Local, "personal-settings.json")); err != nil && !os.IsNotExist(err) {
+		return value, warning, err
+	}
+	return value, warning, nil
 }
 func (s *Store) Publish(value model.Settings, expected int) error {
 	s.mu.Lock()
@@ -101,7 +142,13 @@ func (s *Store) Publish(value model.Settings, expected int) error {
 	if e = AtomicJSON(s.Shared, value); e != nil {
 		return e
 	}
-	return AtomicJSON(filepath.Join(s.Local, "settings.json"), value)
+	if e = AtomicJSON(filepath.Join(s.Local, "settings.json"), value); e != nil {
+		return fmt.Errorf("Общие настройки сохранены, но локальная копия не обновлена: %w", e)
+	}
+	if e = os.Remove(filepath.Join(s.Local, "personal-settings.json")); e != nil && !os.IsNotExist(e) {
+		return fmt.Errorf("Общие настройки сохранены, но личный профиль не отключён: %w", e)
+	}
+	return nil
 }
 func LoadCatalog(path string) model.Catalog {
 	result := model.Catalog{}

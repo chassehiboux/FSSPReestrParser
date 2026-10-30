@@ -26,10 +26,59 @@ func (a *App) openAdmin() {
 	var profile *walk.ComboBox
 	var blocks *walk.ListBox
 	var headless *walk.CheckBox
+	var analytics, byCase *walk.CheckBox
 	var parallel *walk.NumberEdit
 	var save, refresh *walk.PushButton
+	var saveMine, useCommon *walk.PushButton
 	var note, cacheNote *walk.Label
 	busy := false
+	scope := "Общие настройки"
+	if a.store.PersonalActive() {
+		scope = "Личный профиль: изменения действуют только для вас"
+	}
+	saveSettings := func(forAll bool) {
+		if busy {
+			return
+		}
+		working.Headless = headless.Checked()
+		working.Parallel = int(parallel.Value())
+		working.SkipAnalytics = !analytics.Checked()
+		working.SkipCaseRegisters = !byCase.Checked()
+		if err := working.Validate(); err != nil {
+			walk.MsgBox(dlg, "Проверьте настройки", err.Error(), walk.MsgBoxIconWarning)
+			return
+		}
+		busy = true
+		save.SetEnabled(false)
+		saveMine.SetEnabled(false)
+		useCommon.SetEnabled(false)
+		refresh.SetEnabled(false)
+		note.SetText("Сохранение настроек…")
+		go func() {
+			var err error
+			if forAll {
+				err = a.store.Publish(working, working.Revision)
+			} else {
+				err = a.store.SavePersonal(working)
+			}
+			a.window.Synchronize(func() {
+				busy = false
+				save.SetEnabled(true)
+				saveMine.SetEnabled(true)
+				useCommon.SetEnabled(true)
+				refresh.SetEnabled(true)
+				if err != nil {
+					walk.MsgBox(dlg, "Настройки не сохранены", err.Error(), walk.MsgBoxIconError)
+					return
+				}
+				if forAll {
+					working.Revision++
+				}
+				a.cfg = working
+				dlg.Accept()
+			})
+		}()
+	}
 	index := func() int {
 		i := profile.CurrentIndex()
 		if i < 0 {
@@ -89,9 +138,11 @@ func (a *App) openAdmin() {
 		}
 	}
 	def := Dialog{AssignTo: &dlg, Title: "Администрирование · " + platform.AccountLabel(), MinSize: Size{Width: 820, Height: 620}, Size: Size{Width: 860, Height: 660}, Layout: VBox{}, Children: []Widget{
-		Label{Text: "Общие настройки выгрузки", Font: Font{Family: "Segoe UI", PointSize: 15, Bold: true}}, Label{Text: "Изменения применятся у всех перед следующей выгрузкой. Основной блок всегда включён."},
+		Label{Text: "Настройки выгрузки и реестров", Font: Font{Family: "Segoe UI", PointSize: 15, Bold: true}}, Label{Text: scope},
 		ComboBox{AssignTo: &profile, Model: profileNames, OnCurrentIndexChanged: repaint},
 		CheckBox{AssignTo: &headless, Text: "Скрывать браузер (headless)", Checked: working.Headless},
+		CheckBox{AssignTo: &analytics, Text: "Создавать файл аналитики", Checked: !working.SkipAnalytics},
+		CheckBox{AssignTo: &byCase, Text: "Создавать дополнительные реестры _по_делу (возбуждение и окончание)", Checked: !working.SkipCaseRegisters},
 		Composite{Layout: HBox{}, Children: []Widget{Label{Text: "Одновременно активных заданий (1–20):"}, NumberEdit{AssignTo: &parallel, Value: float64(working.Parallel), MinValue: 1, MaxValue: float64(model.MaxParallel), Decimals: 0, MinSize: Size{Width: 100}}, HSpacer{}}},
 		GroupBox{Title: "Основной блок — всегда включён", Layout: VBox{}, Children: []Widget{Label{Text: strings.Join(model.Statuses, "\n")}}},
 		Label{AssignTo: &cacheNote, Text: "Проверка общего кэша полей…"},
@@ -112,6 +163,8 @@ func (a *App) openAdmin() {
 			}
 			busy = true
 			save.SetEnabled(false)
+			saveMine.SetEnabled(false)
+			useCommon.SetEnabled(false)
 			refresh.SetEnabled(false)
 			note.SetText("Получение полей и значений по департаментам…")
 			profiles := append([]model.Profile(nil), working.Profiles...)
@@ -137,6 +190,8 @@ func (a *App) openAdmin() {
 					a.running = false
 					busy = false
 					save.SetEnabled(true)
+					saveMine.SetEnabled(true)
+					useCommon.SetEnabled(true)
 					refresh.SetEnabled(true)
 					repaint()
 					if err != nil {
@@ -147,37 +202,36 @@ func (a *App) openAdmin() {
 				})
 			}()
 		}}}},
-		Label{AssignTo: &note}, Label{Text: "Опубликованные настройки используются всеми пользователями приложения."},
-		Composite{Layout: HBox{}, Children: []Widget{HSpacer{}, PushButton{AssignTo: &save, Text: "Сохранить для всех", OnClicked: func() {
+		Label{AssignTo: &note}, Label{Text: "Личный профиль имеет приоритет над общими настройками до нажатия «Использовать общие»."},
+		Composite{Layout: HBox{}, Children: []Widget{PushButton{AssignTo: &useCommon, Text: "Использовать общие", OnClicked: func() {
 			if busy {
-				return
-			}
-			working.Headless = headless.Checked()
-			working.Parallel = int(parallel.Value())
-			if err := working.Validate(); err != nil {
-				walk.MsgBox(dlg, "Проверьте настройки", err.Error(), walk.MsgBoxIconWarning)
 				return
 			}
 			busy = true
 			save.SetEnabled(false)
+			saveMine.SetEnabled(false)
+			useCommon.SetEnabled(false)
 			refresh.SetEnabled(false)
-			note.SetText("Сохранение общих настроек…")
 			go func() {
-				err := a.store.Publish(working, working.Revision)
+				cfg, warning, err := a.store.UseCommon()
 				a.window.Synchronize(func() {
 					busy = false
 					save.SetEnabled(true)
+					saveMine.SetEnabled(true)
+					useCommon.SetEnabled(true)
 					refresh.SetEnabled(true)
 					if err != nil {
-						walk.MsgBox(dlg, "Настройки не сохранены", err.Error(), walk.MsgBoxIconError)
+						walk.MsgBox(dlg, "Общие настройки недоступны", err.Error(), walk.MsgBoxIconError)
 						return
 					}
-					working.Revision++
-					a.cfg = working
+					a.cfg = cfg
+					if warning != "" {
+						walk.MsgBox(dlg, "Настройки", warning, walk.MsgBoxIconWarning)
+					}
 					dlg.Accept()
 				})
 			}()
-		}}, PushButton{Text: "Закрыть", OnClicked: func() {
+		}}, HSpacer{}, PushButton{AssignTo: &saveMine, Text: "Сохранить только для меня", OnClicked: func() { saveSettings(false) }}, PushButton{AssignTo: &save, Text: "Сохранить для всех", OnClicked: func() { saveSettings(true) }}, PushButton{Text: "Закрыть", OnClicked: func() {
 			if !busy {
 				dlg.Cancel()
 			}

@@ -34,9 +34,10 @@ var StageNames = []string{
 }
 
 type Options struct {
-	Source, Exports string
-	Month           time.Month
-	Year            int
+	Source, Exports                  string
+	Month                            time.Month
+	Year                             int
+	SkipAnalytics, SkipCaseRegisters bool
 }
 type Event struct {
 	Stage                 int
@@ -195,7 +196,14 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 	if strings.EqualFold(filepath.Dir(sourcePath), exportPath) {
 		return result, fmt.Errorf("исходный файл не должен находиться в выбранной папке выгрузки ОВЗИД")
 	}
-	dir, err := reserve(filepath.Dir(sourcePath), names)
+	enabled := func(kind int) bool { return !(kind == 3 && opt.SkipAnalytics || kind >= 4 && opt.SkipCaseRegisters) }
+	outputNames := []string{}
+	for i, name := range names {
+		if enabled(i) {
+			outputNames = append(outputNames, name)
+		}
+	}
+	dir, err := reserve(filepath.Dir(sourcePath), outputNames)
 	if err != nil {
 		return result, err
 	}
@@ -254,7 +262,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 				wanted[k] = &birthInfo{Dates: map[string]time.Time{}}
 			}
 		}
-		if k, ok := makeKey(row, sourceCols, sourceCaseKeys); ok && wantedByCase[k] == nil {
+		if k, ok := makeKey(row, sourceCols, sourceCaseKeys); !opt.SkipCaseRegisters && ok && wantedByCase[k] == nil {
 			wantedByCase[k] = &birthInfo{Dates: map[string]time.Time{}}
 		}
 		return nil
@@ -292,7 +300,11 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 		e = scanBook(ctx, file, func(_ int, row []value, date1904 bool) error {
 			if cols == nil {
 				var e error
-				cols, e = headers(row, exportFields)
+				required := exportFields
+				if opt.SkipCaseRegisters {
+					required = exportFields[:5]
+				}
+				cols, e = headers(row, required)
 				return e
 			}
 			empty := true
@@ -313,7 +325,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 			if k, ok := makeKey(row, cols, exportFields[:4]); ok && wanted[k] != nil {
 				wanted[k].add(v, date1904)
 			}
-			if k, ok := makeKey(row, cols, exportCaseKeys); ok && wantedByCase[k] != nil {
+			if k, ok := makeKey(row, cols, exportCaseKeys); !opt.SkipCaseRegisters && ok && wantedByCase[k] != nil {
 				wantedByCase[k].add(v, date1904)
 			}
 			return nil
@@ -344,7 +356,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 			result.Found++
 		}
 		// Проверяем отсутствие самого совпадения ключа, а не только отсутствие найденной ДР.
-		if info := wanted[k]; !ok || info == nil || !info.Matched {
+		if info := wanted[k]; !opt.SkipCaseRegisters && (!ok || info == nil || !info.Matched) {
 			ck, cok := makeKey(r.Values, sourceCols, sourceCaseKeys)
 			r.CaseBirthday, _ = resolveBirth(ck, cok, wantedByCase)
 		}
@@ -364,6 +376,10 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 	defer os.RemoveAll(tmp)
 	for i := range names {
 		stage = i + 1
+		if !enabled(i) {
+			send("Пропущен", "Отключено в настройках", 0, len(rows), result.Found)
+			continue
+		}
 		send("Выполняется", "Формирование файла…", 0, len(rows), result.Found)
 		if err = writeBook(ctx, filepath.Join(tmp, names[i]), i, sourceHeaders, sourceCols, rows); err != nil {
 			return result, err
@@ -374,7 +390,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 		}
 		send("Подготовлен", detail, 0, len(rows), result.Found)
 	}
-	for _, name := range names {
+	for _, name := range outputNames {
 		if err = ctx.Err(); err != nil {
 			return result, err
 		}
@@ -386,9 +402,12 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 		return result, err
 	}
 	result.Dir = dir
-	result.Files = names
+	result.Files = outputNames
 	success = true
 	for i := 1; i <= len(names); i++ {
+		if !enabled(i - 1) {
+			continue
+		}
 		stage = i
 		send("Сохранён", names[i-1], len(rows), len(rows), result.Found)
 	}
