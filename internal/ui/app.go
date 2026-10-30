@@ -209,6 +209,10 @@ type App struct {
 	initializing       bool
 	pipelineButton     *walk.PushButton
 	pipeline           *operation
+	updatePanel        *walk.Composite
+	updateStatus       *walk.Label
+	updateProgress     *walk.ProgressBar
+	statusPlaceholder  *walk.Composite
 }
 
 func Run(store *settings.Store, local, ready string, skipUpdate bool) error {
@@ -230,26 +234,30 @@ func Run(store *settings.Store, local, ready string, skipUpdate bool) error {
 			} else {
 				more.SetText("Отдельные операции ▸")
 			}
-			size := a.window.Size()
-			if visible {
-				size.Height += 110
-			} else {
-				size.Height -= 110
-			}
-			a.window.SetSize(size)
 		}},
 		Composite{AssignTo: &separate, Visible: false, Layout: VBox{Spacing: 8}, Children: []Widget{
 			PushButton{AssignTo: &a.start, Text: "Только выгрузить ОВЗИД", Enabled: false, MinSize: Size{Width: 300, Height: 40}, OnClicked: a.startExport},
 			PushButton{AssignTo: &a.registerButton, Text: "Только создать реестры", Enabled: false, MinSize: Size{Width: 300, Height: 40}, OnClicked: a.startRegisters},
 		}},
+		Composite{AssignTo: &a.updatePanel, Visible: false, Layout: VBox{MarginsZero: true, Spacing: 5}, Children: []Widget{
+			Label{AssignTo: &a.updateStatus, Text: "Скачивание обновления…", MaxSize: Size{Width: 320}},
+			ProgressBar{AssignTo: &a.updateProgress, MaxValue: 100, MinSize: Size{Height: 12}, MaxSize: Size{Height: 16}},
+		}},
 		Label{AssignTo: &a.status, Text: "Проверка обновлений…", MaxSize: Size{Width: 320}},
 		Composite{Layout: HBox{}, Children: []Widget{PushButton{AssignTo: &a.admin, Text: "Администрирование", Visible: platform.IsAdmin(), Enabled: false, OnClicked: a.openAdmin}, PushButton{AssignTo: &a.updateButton, Text: "Обновить", Visible: false, OnClicked: a.runPendingUpdate}, HSpacer{}, Label{Text: "Версия " + update.Version}}},
 		VSpacer{},
-	}}, Composite{AssignTo: &a.host, Visible: false, StretchFactor: 1, Layout: VBox{MarginsZero: true}}}}).Create()
+	}}, Composite{AssignTo: &a.host, StretchFactor: 1, Layout: VBox{MarginsZero: true}, Children: []Widget{
+		Composite{AssignTo: &a.statusPlaceholder, StretchFactor: 1, Layout: VBox{}, Children: []Widget{
+			Label{Text: "Состояние выполнения", Font: Font{Family: "Segoe UI", PointSize: 14, Bold: true}},
+			Label{Text: "Выберите исходный файл и период. Здесь появятся этапы выгрузки и создания реестров."},
+			VSpacer{},
+		}},
+	}}}}).Create()
 	if err != nil {
 		return err
 	}
 	a.owner = a.window
+	a.sizeStatusWindow()
 	a.setupNotifications()
 	if a.notifications != nil {
 		defer a.notifications.Dispose()

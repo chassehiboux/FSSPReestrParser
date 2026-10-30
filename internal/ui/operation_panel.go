@@ -132,6 +132,10 @@ func (a *App) showOperation(op *operation) {
 		other.panel.SetVisible(other == op)
 	}
 	a.host.SetVisible(true)
+	a.statusPlaceholder.SetVisible(false)
+}
+
+func (a *App) sizeStatusWindow() {
 	var mi win.MONITORINFO
 	mi.CbSize = uint32(unsafe.Sizeof(mi))
 	if win.GetMonitorInfo(win.MonitorFromWindow(a.window.Handle(), win.MONITOR_DEFAULTTONEAREST), &mi) {
@@ -144,6 +148,5 @@ func (a *App) showOperation(op *operation) {
 }
 func (a *App) hideOperation(op *operation) {
 	op.panel.SetVisible(false)
-	a.host.SetVisible(false)
-	a.window.SetSize(walk.Size{Width: 380, Height: 360})
+	a.statusPlaceholder.SetVisible(true)
 }

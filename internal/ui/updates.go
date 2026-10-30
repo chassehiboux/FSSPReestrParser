@@ -27,44 +27,40 @@ func (a *App) startupUpdates() bool {
 
 // installUpdate работает вне потока интерфейса и не запускается во время выгрузки.
 func (a *App) installUpdate(release update.Release) bool {
-	prepared := make(chan *operation, 1)
+	prepared := make(chan struct{}, 1)
 	a.window.Synchronize(func() {
 		a.updating = true
 		a.pendingUpdate = nil
 		a.updateButton.SetVisible(false)
 		a.enable()
 		walk.MsgBox(a.window, "Доступно обновление", "Доступна версия "+release.Version+". Нажмите ОК для обновления.", walk.MsgBoxIconInformation)
-		op, err := newOperation(a, "Обновление приложения", false, nil)
-		if err != nil {
-			a.error(err)
-			prepared <- nil
-			return
-		}
-		op.running = true
-		op.status.SetText("Скачивание обновления…")
-		prepared <- op
+		a.updateStatus.SetText("Скачивание обновления " + release.Version + "…")
+		a.updateProgress.SetValue(0)
+		a.updatePanel.SetVisible(true)
+		prepared <- struct{}{}
 	})
-	var op *operation
 	select {
 	case <-a.lifecycle.Done():
 		return false
-	case op = <-prepared:
-	}
-	if op == nil {
-		a.window.Synchronize(func() { a.updating = false; a.enable() })
-		return true
+	case <-prepared:
 	}
 	ctx, cancel := context.WithTimeout(a.lifecycle, 5*time.Minute)
 	candidate, err := update.Download(ctx, release, a.local, func(done, total int64) {
 		a.window.Synchronize(func() {
 			if total > 0 {
-				op.progress.SetValue(int(done * 100 / total))
+				a.updateProgress.SetValue(int(done * 100 / total))
+				a.updateStatus.SetText(fmt.Sprintf("Обновление: %d%% · %.1f / %.1f МБ", done*100/total, float64(done)/1048576, float64(total)/1048576))
+			} else {
+				a.updateStatus.SetText(fmt.Sprintf("Обновление: %.1f МБ", float64(done)/1048576))
 			}
-			op.status.SetText(fmt.Sprintf("Обновление: %.1f МБ", float64(done)/1048576))
 		})
 	})
 	cancel()
 	if err == nil {
+		a.window.Synchronize(func() {
+			a.updateProgress.SetValue(100)
+			a.updateStatus.SetText("Установка обновления…")
+		})
 		var target string
 		target, err = os.Executable()
 		if err == nil {
@@ -77,8 +73,7 @@ func (a *App) installUpdate(release update.Release) bool {
 	}
 	a.window.Synchronize(func() {
 		a.updating = false
-		op.running = false
-		a.hideOperation(op)
+		a.updatePanel.SetVisible(false)
 		a.enable()
 		walk.MsgBox(a.window, "Обновление не установлено", "Продолжаем работу на текущей версии.\n"+err.Error(), walk.MsgBoxIconWarning)
 	})
