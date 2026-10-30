@@ -138,7 +138,7 @@ func (r Runner) open(ctx context.Context, req Request) (*session, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	raw, _ := json.Marshal([]any{"id-then-source-case-v1", model.Primary(), req, hash})
+	raw, _ := json.Marshal([]any{"id-then-source-case-empty-birth-v2", model.Primary(), req, hash})
 	sum := sha256.Sum256(raw)
 	signature := hex.EncodeToString(sum[:])
 	root := filepath.Join(r.Local, "pipelines")

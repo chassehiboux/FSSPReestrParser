@@ -43,34 +43,45 @@ type Options struct {
 	ExportFiles []string
 }
 
-func BirthSummary(found, byCase int, _ bool) string {
-	return fmt.Sprintf("Д.р. найдено: %d (по ИД: %d, по номеру дела: %d)", found, found-byCase, byCase)
+func BirthSummary(found, byCase int, _ bool, missing ...int) string {
+	empty := 0
+	if len(missing) > 0 {
+		empty = missing[0]
+	}
+	return fmt.Sprintf("Совпало: %d (по ИД: %d, по номеру дела: %d). ДР заполнена: %d; пустая ДР: %d", found, found-byCase, byCase, found-empty, empty)
 }
 
 type Event struct {
 	Stage                 int
 	State, Detail         string
 	Checked, Total, Found int
+	WithoutBirth          int
 	FoundByCase           int
 	ReadRows              int
 }
 type Result struct {
 	Dir          string
 	Total, Found int
+	WithoutBirth int
 	FoundByCase  int
 	ReadRows     int
 	Files        []string
 }
 type record struct {
-	Values   []value
-	Birthday time.Time
-	Status   string
+	MatchedWithoutBirth bool
+	Values              []value
+	Birthday            time.Time
+	Status              string
 }
 type key [3]value
 type birthInfo struct {
 	Dates            map[string]time.Time
 	Missing, Invalid bool
 	Matched          bool
+}
+
+func emptyBirthMatch(info *birthInfo, valid bool) bool {
+	return valid && info != nil && info.Matched && info.Missing && !info.Invalid && len(info.Dates) == 0
 }
 
 func (b *birthInfo) add(v value, date1904 bool) {
@@ -244,7 +255,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 	stage := 0
 	send := func(state, detail string, checked, total, found int) {
 		if emit != nil {
-			emit(Event{Stage: stage, State: state, Detail: detail, Checked: checked, Total: total, Found: found, FoundByCase: result.FoundByCase, ReadRows: result.ReadRows})
+			emit(Event{Stage: stage, State: state, Detail: detail, Checked: checked, Total: total, Found: found, FoundByCase: result.FoundByCase, ReadRows: result.ReadRows, WithoutBirth: result.WithoutBirth})
 		}
 	}
 	defer func() {
@@ -470,25 +481,33 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 		r := &rows[i]
 		k, ok := makeKey(r.Values, sourceCols, sourceKeys)
 		r.Birthday, r.Status = resolveBirth(k, ok, wanted)
+		r.MatchedWithoutBirth = emptyBirthMatch(wanted[k], ok)
 		// Проверяем отсутствие самого совпадения ключа, а не только отсутствие найденной ДР.
 		if info := wanted[k]; !ok || info == nil || !info.Matched {
 			ck, cok := makeKey(r.Values, sourceCols, sourceCaseKeys)
 			r.Birthday, r.Status = resolveBirth(ck, cok, wantedByCase)
-			if !r.Birthday.IsZero() {
+			r.MatchedWithoutBirth = emptyBirthMatch(wantedByCase[ck], cok)
+			if !r.Birthday.IsZero() || r.MatchedWithoutBirth {
 				result.FoundByCase++
 				r.Status = "Совпало по номеру дела исходника и номеру ИД выгрузки"
+				if r.MatchedWithoutBirth {
+					r.Status += "; д.р. отсутствует"
+				}
 			} else {
 				r.Status = "По номеру дела: " + r.Status
 			}
 		}
-		if !r.Birthday.IsZero() {
+		if !r.Birthday.IsZero() || r.MatchedWithoutBirth {
 			result.Found++
+			if r.MatchedWithoutBirth {
+				result.WithoutBirth++
+			}
 		}
 		if i%100 == 0 || i+1 == len(rows) {
-			send("Выполняется", fmt.Sprintf("Проверено %d/%d. %s", i+1, len(rows), BirthSummary(result.Found, result.FoundByCase, opt.SkipCaseRegisters)), i+1, len(rows), result.Found)
+			send("Выполняется", fmt.Sprintf("Проверено %d/%d. %s", i+1, len(rows), BirthSummary(result.Found, result.FoundByCase, opt.SkipCaseRegisters, result.WithoutBirth)), i+1, len(rows), result.Found)
 		}
 	}
-	send("Готово", fmt.Sprintf("Проверено %d/%d. %s", len(rows), len(rows), BirthSummary(result.Found, result.FoundByCase, opt.SkipCaseRegisters)), len(rows), len(rows), result.Found)
+	send("Готово", fmt.Sprintf("Проверено %d/%d. %s", len(rows), len(rows), BirthSummary(result.Found, result.FoundByCase, opt.SkipCaseRegisters, result.WithoutBirth)), len(rows), len(rows), result.Found)
 	// Полный комплект готовится вне папки результата: в ней не бывает частично записанных XLSX.
 	tmp, err := os.MkdirTemp("", "fssp-registers-")
 	if err != nil {
@@ -614,7 +633,8 @@ func writeBook(ctx context.Context, dest string, kind int, sourceHeaders []value
 			return err
 		}
 		birth := r.Birthday
-		if kind < 2 && birth.IsZero() || kind == 2 && !birth.IsZero() {
+		matched := !birth.IsZero() || r.MatchedWithoutBirth
+		if kind < 2 && !matched || kind == 2 && matched {
 			continue
 		}
 		for c, h := range outHeaders {

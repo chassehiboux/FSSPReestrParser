@@ -117,7 +117,7 @@ func (a *App) startPipeline() {
 						}
 					} else {
 						op.progress.SetValue(100)
-						message := fmt.Sprintf("Готово. Файлов реестров: %d. Проверено %d/%d. %s.", len(result.Files), result.Total, result.Total, registry.BirthSummary(result.Found, result.FoundByCase, snapshot.Registry.SkipCaseRegisters))
+						message := fmt.Sprintf("Готово. Файлов реестров: %d. Проверено %d/%d. %s.", len(result.Files), result.Total, result.Total, registry.BirthSummary(result.Found, result.FoundByCase, snapshot.Registry.SkipCaseRegisters, result.WithoutBirth))
 						op.status.SetText(message)
 						a.status.SetText("Выгрузка и реестры созданы")
 						a.notify("Выгрузка и реестры созданы", message)
