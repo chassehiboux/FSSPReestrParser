@@ -118,6 +118,42 @@ func TestRetriesOnlyFailedJobs(t *testing.T) {
 	}
 }
 
+func TestPublishesImmediatelyAndDeletesLocalCopy(t *testing.T) {
+	req, local := request(t)
+	f := &fake{}
+	r := Runner{Local: local, Factory: f.factory, Delay: time.Nanosecond}
+	var plan *Plan
+	immediate := false
+	_, err := r.Run(context.Background(), req, func(ev Event) {
+		if ev.Plan != nil {
+			plan = ev.Plan
+		}
+		if ev.Export != nil && ev.Export.State == queue.Saved {
+			name := jobFilename(plan.Jobs, ev.Export.JobID)
+			if queue.ValidateXLSX(filepath.Join(plan.Dir, "Исх.", name)) != nil {
+				t.Error("нет целевого файла при успешном статусе")
+			}
+			paths, _ := filepath.Glob(filepath.Join(local, "pipelines", "*", "exports", name))
+			if len(paths) > 0 {
+				t.Error("локальная копия не удалена")
+			}
+			count := 0
+			for _, n := range f.calls {
+				count += n
+			}
+			if count == 1 {
+				immediate = true
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !immediate {
+		t.Fatal("первый файл не опубликован до окончания остальных выгрузок")
+	}
+}
+
 func TestNetworkWriteRetryKeepsDownloadedFilesAndResumes(t *testing.T) {
 	req, local := request(t)
 	f := &fake{}

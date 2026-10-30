@@ -5,9 +5,12 @@ import (
 	"github.com/chassehiboux/FSSPReestrParser/internal/registry"
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
+	"github.com/lxn/win"
+	"unsafe"
 )
 
 type operation struct {
+	window    *walk.Dialog
 	panel     *walk.Composite
 	status    *walk.Label
 	progress  *walk.ProgressBar
@@ -38,15 +41,12 @@ func newOperation(a *App, title string, withTable bool, openFolder func(), stage
 	}
 	children := []Widget{Label{Text: title, Font: Font{Family: "Segoe UI", PointSize: 14, Bold: true}}, Label{AssignTo: &op.status, Text: "Подготовка…"}, ProgressBar{AssignTo: &op.progress, MaxValue: 100}}
 	if withTable {
-		tableHeight := 300
-		if stageTable {
-			tableHeight = 180
-		}
+		tableHeight := 480
 		columns := []TableViewColumn{{Title: "№", Width: 40}, {Title: "Департамент", Width: 160}, {Title: "Условия", Width: 360}, {Title: "Состояние", Width: 130}, {Title: "Подробности", Width: 300}}
 		if stageTable {
 			columns = []TableViewColumn{{Title: "№", Width: 35}, {Title: "Этап", Width: 500}, {Title: "Состояние", Width: 120}, {Title: "Подробности", Width: 340}}
 		}
-		children = append(children, TableView{AssignTo: &op.table, Model: op.model, MinSize: Size{Width: 900, Height: tableHeight}, AlternatingRowBG: true, LastColumnStretched: true, ColumnsSizable: true, StyleCell: func(style *walk.CellStyle) {
+		children = append(children, TableView{AssignTo: &op.table, Model: op.model, StretchFactor: 1, Font: Font{Family: "Segoe UI", PointSize: 9}, MinSize: Size{Width: 800, Height: tableHeight}, AlternatingRowBG: true, LastColumnStretched: true, ColumnsSizable: true, StyleCell: func(style *walk.CellStyle) {
 			if stageTable {
 				if style.Col() == 2 && style.Row() >= 0 && style.Row() < op.model.RowCount() {
 					switch op.model.stageState(style.Row()) {
@@ -119,32 +119,38 @@ func newOperation(a *App, title string, withTable bool, openFolder func(), stage
 	}
 	buttons = append(buttons, HSpacer{}, PushButton{Text: "Свернуть", OnClicked: func() { a.hideOperation(op) }})
 	children = append(children, Composite{Layout: HBox{}, Children: buttons})
-	err := (Composite{AssignTo: &op.panel, Visible: false, Layout: VBox{Spacing: 10}, Children: children}).Create(NewBuilder(a.host))
+	err := (Dialog{AssignTo: &op.window, Title: title, Icon: appIcon(), Layout: VBox{}, Children: []Widget{Composite{AssignTo: &op.panel, Layout: VBox{Spacing: 8}, Children: children}}}).Create(a.window)
 	if err != nil {
 		return nil, err
 	}
 	a.operations = append(a.operations, op)
+	op.window.Closing().Attach(func(canceled *bool, _ walk.CloseReason) { *canceled = true; op.window.Hide() })
 	a.showOperation(op)
 	return op, nil
 }
 func (a *App) showOperation(op *operation) {
 	for _, other := range a.operations {
-		other.panel.SetVisible(other == op)
-	}
-	a.host.SetVisible(true)
-	height := 560
-	width := 760
-	if op.withTable {
-		height = 820
-		width = 1180
-		if op.model.stages != nil {
-			height = 660
+		if other != op {
+			other.window.Hide()
 		}
 	}
-	a.window.SetSize(walk.Size{Width: width, Height: height})
+	var mi win.MONITORINFO
+	mi.CbSize = uint32(unsafe.Sizeof(mi))
+	if win.GetMonitorInfo(win.MonitorFromWindow(a.window.Handle(), win.MONITOR_DEFAULTTONEAREST), &mi) {
+		area := mi.RcWork
+		main := a.window.BoundsPixels()
+		width := min(op.window.IntFrom96DPI(1080), int(area.Right-area.Left)-main.Width-12)
+		x := main.X + main.Width + 8
+		if x+width > int(area.Right) {
+			main.X = int(area.Left)
+			a.window.SetBoundsPixels(main)
+			x = main.X + main.Width + 8
+		}
+		height := min(op.window.IntFrom96DPI(760), int(area.Bottom-area.Top))
+		op.window.SetBoundsPixels(walk.Rectangle{X: x, Y: max(int(area.Top), min(main.Y, int(area.Bottom)-height)), Width: width, Height: height})
+	}
+	op.window.Show()
 }
 func (a *App) hideOperation(op *operation) {
-	op.panel.SetVisible(false)
-	a.host.SetVisible(false)
-	a.window.SetSize(walk.Size{Width: 720, Height: 360})
+	op.window.Hide()
 }

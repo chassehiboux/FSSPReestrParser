@@ -172,9 +172,9 @@ func Run(store *settings.Store, local, ready string, skipUpdate bool) error {
 	defer a.lifecycleCancel()
 	var separate *walk.Composite
 	var more *walk.PushButton
-	err := (MainWindow{AssignTo: &a.window, Title: "Реестры ФССП", Icon: appIcon(), MinSize: Size{Width: 640, Height: 330}, Size: Size{Width: 720, Height: 360}, Font: Font{Family: "Segoe UI", PointSize: 10}, Layout: VBox{Margins: Margins{Left: 24, Top: 20, Right: 24, Bottom: 20}, Spacing: 14}, Children: []Widget{
+	err := (MainWindow{AssignTo: &a.window, Title: "Реестры ФССП", Icon: appIcon(), MinSize: Size{Width: 360, Height: 330}, Size: Size{Width: 380, Height: 360}, Font: Font{Family: "Segoe UI", PointSize: 10}, Layout: VBox{Margins: Margins{Left: 24, Top: 20, Right: 24, Bottom: 20}, Spacing: 14}, Children: []Widget{
 		Label{Text: "Реестры ФССП", Font: Font{Family: "Segoe UI", PointSize: 20, Bold: true}},
-		Label{Text: "Выберите исходный файл и период — программа выгрузит ОВЗИД и создаст реестры."},
+		Label{Text: "Выберите исходный файл и период."},
 		ComboBox{AssignTo: &a.profiles, Visible: false},
 		PushButton{AssignTo: &a.pipelineButton, Text: "Выгрузить ОВЗИД и создать реестры", Enabled: false, MinSize: Size{Width: 300, Height: 48}, OnClicked: a.startPipeline},
 		PushButton{AssignTo: &more, Text: "Отдельные операции ▸", OnClicked: func() {
@@ -195,9 +195,9 @@ func Run(store *settings.Store, local, ready string, skipUpdate bool) error {
 		}},
 		Composite{AssignTo: &separate, Visible: false, Layout: VBox{Spacing: 8}, Children: []Widget{
 			PushButton{AssignTo: &a.start, Text: "Только выгрузить ОВЗИД", Enabled: false, MinSize: Size{Width: 300, Height: 40}, OnClicked: a.startExport},
-			PushButton{AssignTo: &a.registerButton, Text: "Только создать реестры из готовой выгрузки", Enabled: false, MinSize: Size{Width: 300, Height: 40}, OnClicked: a.startRegisters},
+			PushButton{AssignTo: &a.registerButton, Text: "Только создать реестры", Enabled: false, MinSize: Size{Width: 300, Height: 40}, OnClicked: a.startRegisters},
 		}},
-		Label{AssignTo: &a.status, Text: "Проверка обновлений…"},
+		Label{AssignTo: &a.status, Text: "Проверка обновлений…", MaxSize: Size{Width: 320}},
 		Composite{AssignTo: &a.host, Visible: false, StretchFactor: 1, Layout: VBox{}},
 		Composite{Layout: HBox{}, Children: []Widget{PushButton{AssignTo: &a.admin, Text: "Администрирование", Visible: platform.IsAdmin(), Enabled: false, OnClicked: a.openAdmin}, PushButton{AssignTo: &a.updateButton, Text: "Обновить", Visible: false, OnClicked: a.runPendingUpdate}, HSpacer{}, Label{Text: "Версия " + update.Version}}},
 	}}).Create()

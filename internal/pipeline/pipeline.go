@@ -21,7 +21,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-var StageNames = append([]string{"Сохранение и проверка выгрузок в папке «Исх.»"}, registry.StageNames...)
+var StageNames = append([]string{"Проверка выгрузок в папке «Исх.»"}, registry.StageNames...)
 
 type Request struct {
 	Registry registry.Options
@@ -270,6 +270,40 @@ func (r Runner) Run(ctx context.Context, req Request, emit func(Event)) (out Res
 	emit(Event{Plan: &Plan{Jobs: s.Jobs, Dir: s.Dir, Resumed: resumed}})
 	localExports := filepath.Join(s.work, "exports")
 	target := filepath.Join(s.Dir, "Исх.")
+	if err = os.MkdirAll(target, 0700); err != nil {
+		return out, err
+	}
+	publish := func(name, hash string) error {
+		src, dest := filepath.Join(localExports, name), filepath.Join(target, name)
+		var e error
+		for attempt := 1; attempt <= 3; attempt++ {
+			if valid(ctx, dest, hash) {
+				os.Remove(src)
+				return nil
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if attempt > 1 {
+				if e = r.wait(ctx, attempt-1); e != nil {
+					return e
+				}
+			}
+			if r.Save == nil {
+				e = queue.SaveResult(src, dest, true)
+			} else {
+				e = r.Save(src, dest)
+			}
+			if e == nil && valid(ctx, dest, hash) {
+				os.Remove(src)
+				return nil
+			}
+			if e == nil {
+				e = fmt.Errorf("проверка записанного файла не пройдена")
+			}
+		}
+		return e
+	}
 	// После аварии файл мог успеть сохраниться, а его контрольная сумма — ещё нет.
 	adopted := false
 	for _, j := range s.Jobs {
@@ -338,6 +372,7 @@ func (r Runner) Run(ctx context.Context, req Request, emit func(Event)) (out Res
 			return out, e
 		}
 		var saveErr error
+		var transferErr error
 		queue.Run(ctx, pending, req.Parallel, backend, func(ev queue.Event) {
 			if ev.State == queue.Saved {
 				path := filepath.Join(localExports, jobFilename(s.Jobs, ev.JobID))
@@ -363,10 +398,22 @@ func (r Runner) Run(ctx context.Context, req Request, emit func(Event)) (out Res
 				}
 			}
 			emit(Event{Export: &ev})
+			if ev.State == "Подготовлен" && transferErr == nil && ctx.Err() == nil {
+				name := jobFilename(s.Jobs, ev.JobID)
+				if e := publish(name, s.Entries[ev.JobID].SHA256); e != nil {
+					transferErr = e
+				} else {
+					event := queue.Event{JobID: ev.JobID, State: queue.Saved, Detail: "Сохранён в «Исх.»; локальная копия удалена · " + name}
+					emit(Event{Export: &event})
+				}
+			}
 		})
 		backend.Close()
 		if saveErr != nil {
 			return out, fmt.Errorf("не удалось сохранить состояние запуска: %w", saveErr)
+		}
+		if transferErr != nil {
+			return out, fmt.Errorf("не удалось сохранить выгрузку в «Исх.»: %w. Несохранённые локальные копии оставлены для продолжения", transferErr)
 		}
 	}
 	if err = ctx.Err(); err != nil {
@@ -375,7 +422,7 @@ func (r Runner) Run(ctx context.Context, req Request, emit func(Event)) (out Res
 	if n := len(missing()); n > 0 {
 		return out, fmt.Errorf("не удалось получить выгрузки: %d. Реестры не создавались. Нажмите «Продолжить» для повтора только незавершённых заданий", n)
 	}
-	stage("Выполняется", "Запись и проверка выгрузок…", 0, len(s.Jobs))
+	stage("Выполняется", "Проверка полного комплекта выгрузок…", 0, len(s.Jobs))
 	if err = os.MkdirAll(target, 0700); err != nil {
 		return out, err
 	}
@@ -422,20 +469,8 @@ func (r Runner) Run(ctx context.Context, req Request, emit func(Event)) (out Res
 				stage("Ошибка", copyErr.Error(), i, len(s.Jobs))
 				return out, fmt.Errorf("выгрузка скачана, но не сохранена в «Исх.»: %w. Локальная копия сохранена; можно продолжить", copyErr)
 			}
-			// Реестры читают собственный локальный снимок, а не изменяемую сетевую копию.
-			local := filepath.Join(localExports, j.Filename)
-			if !valid(ctx, local, e.SHA256) {
-				if err = ctx.Err(); err != nil {
-					return out, err
-				}
-				if err = queue.SaveResult(dest, local, true); err != nil {
-					return out, err
-				}
-				if !valid(ctx, local, e.SHA256) {
-					return out, fmt.Errorf("выгрузка изменилась при восстановлении локальной копии: %s", j.Filename)
-				}
-			}
-			files = append(files, local)
+			os.Remove(filepath.Join(localExports, j.Filename))
+			files = append(files, dest)
 			jobEvent(j, queue.Saved, "Сохранён и проверен · "+j.Filename)
 		}
 		stage("Выполняется", fmt.Sprintf("Проверено выгрузок %d/%d", i+1, len(s.Jobs)), i+1, len(s.Jobs))
@@ -451,7 +486,7 @@ func (r Runner) Run(ctx context.Context, req Request, emit func(Event)) (out Res
 	}
 	stage("Готово", fmt.Sprintf("Проверены все %d отборов; можно создавать реестры", len(s.Jobs)), len(s.Jobs), len(s.Jobs))
 	opt := req.Registry
-	opt.Source, opt.Exports, opt.OutputDir, opt.ExportFiles = filepath.Join(s.work, "source.xlsx"), localExports, s.Dir, files
+	opt.Source, opt.Exports, opt.OutputDir, opt.ExportFiles = filepath.Join(s.work, "source.xlsx"), target, s.Dir, files
 	// В незавершённом запуске могли остаться собственные файлы после аварии при публикации.
 	names, _ := registry.Names(opt.Month, opt.Year)
 	for _, name := range names {
