@@ -81,7 +81,7 @@ func (a *App) installUpdate(release update.Release) bool {
 }
 
 func (a *App) backgroundUpdates() {
-	ticker := time.NewTicker(30 * time.Minute)
+	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
 		select {
