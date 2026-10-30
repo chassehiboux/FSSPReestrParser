@@ -259,6 +259,12 @@ func Run(store *settings.Store, local, ready string, skipUpdate bool) error {
 		return err
 	}
 	a.owner = a.window
+	// Удаляем старые резервы только после успешного создания главного окна.
+	if ready == "" {
+		if exe, e := os.Executable(); e == nil {
+			go update.Cleanup(local, exe)
+		}
+	}
 	a.sizeStatusWindow()
 	a.setupNotifications()
 	if a.notifications != nil {

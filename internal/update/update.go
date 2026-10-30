@@ -240,6 +240,11 @@ func LaunchHelper(candidate, target string) error {
 
 // Apply выполняется скачанным EXE после подтверждения обновления пользователем.
 func Apply(target string, parent uint32) (resultErr error) {
+	unlock, lockErr := updateLock(target)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	self, e := os.Executable()
 	if e != nil {
 		return e
@@ -291,13 +296,14 @@ func Apply(target string, parent uint32) (resultErr error) {
 		os.Rename(backup, target)
 		return e
 	}
-	cmd := exec.Command(target, "--update-ready", ready)
+	cmd := exec.Command(target, "--update-ready", ready, "--update-helper-pid", strconv.Itoa(os.Getpid()))
 	if e = cmd.Start(); e != nil {
 		return rollback(target, backup, e)
 	}
 	deadline := time.Now().Add(45 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, e = os.Stat(ready); e == nil {
+			os.Remove(backup)
 			return nil
 		}
 		time.Sleep(200 * time.Millisecond)

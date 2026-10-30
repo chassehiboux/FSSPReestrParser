@@ -21,6 +21,7 @@ func main() {
 	target := flag.String("target", "", "")
 	parent := flag.Uint("parent-pid", 0, "")
 	ready := flag.String("update-ready", "", "")
+	helperPID := flag.Uint("update-helper-pid", 0, "")
 	skip := flag.Bool("skip-update-once", false, "")
 	flag.Parse()
 	if *apply {
@@ -42,6 +43,11 @@ func main() {
 	if shared == "" {
 		walk.MsgBox(nil, "Настройки не подключены", "Эта сборка не подключена к общим настройкам. Обратитесь к администратору приложения.", walk.MsgBoxIconError)
 		return
+	}
+	if exe, e := os.Executable(); e == nil {
+		if *ready != "" && *helperPID > 0 {
+			go update.CleanupAfterHelper(local, exe, filepath.Dir(*ready), uint32(*helperPID))
+		}
 	}
 	if err = ui.Run(&settings.Store{Shared: shared, Local: local}, local, *ready, *skip); err != nil {
 		os.WriteFile(filepath.Join(local, "startup-error.txt"), []byte(err.Error()), 0600)
