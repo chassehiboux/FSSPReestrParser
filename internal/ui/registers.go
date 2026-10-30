@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chassehiboux/FSSPReestrParser/internal/model"
 	"github.com/chassehiboux/FSSPReestrParser/internal/platform"
 	"github.com/chassehiboux/FSSPReestrParser/internal/registry"
 	"github.com/lxn/walk"
@@ -160,19 +159,10 @@ func (a *App) startRegisters() {
 	op.stop.SetEnabled(true)
 	a.status.SetText("Создание реестров выполняется…")
 	a.enable()
-	selectedProfile := model.Profile{}
-	if i := a.profiles.CurrentIndex(); i >= 0 && i < len(a.cfg.Profiles) {
-		selectedProfile = a.cfg.Profiles[i]
-	}
 	go func() {
 		defer cancel()
 		cfg, warning, settingsErr := a.store.Load()
 		if settingsErr == nil {
-			for _, p := range cfg.Profiles {
-				if p.ID == selectedProfile.ID {
-					selectedProfile = p
-				}
-			}
 			opt.SkipAnalytics = cfg.SkipAnalytics
 			opt.SkipCaseRegisters = cfg.SkipCaseRegisters
 		} else {
@@ -186,17 +176,7 @@ func (a *App) startRegisters() {
 			})
 		}
 		a.window.Synchronize(func() { op.model.filterStages(opt, 0); op.model.PublishRowsReset() })
-		var matchingErr error
-		if selectedProfile.ID != "" {
-			opt.FileMatching, matchingErr = model.FileMatching(selectedProfile)
-		}
-		run := func(ctx context.Context, opt registry.Options, sink func(registry.Event)) (registry.Result, error) {
-			if matchingErr != nil {
-				return registry.Result{}, matchingErr
-			}
-			return registry.Run(ctx, opt, sink)
-		}
-		result, runErr := run(ctx, opt, func(e registry.Event) {
+		result, runErr := registry.Run(ctx, opt, func(e registry.Event) {
 			a.window.Synchronize(func() {
 				op.model.stages[e.Stage] = e
 				row := op.model.stageRow(e.Stage)

@@ -124,12 +124,7 @@ func (a *App) openAdmin() {
 			b = model.Block{ID: fmt.Sprintf("block-%d", time.Now().UnixNano()), Name: fmt.Sprintf("Блок %d", len(p.Blocks)+1), Enabled: true}
 		} else {
 			if i < 0 {
-				if blocks.CurrentIndex() == 0 {
-					if rules, ok := editElementKeys(dlg, p.AllBlocks()[0]); ok {
-						p.PrimaryMatching = rules
-						repaint()
-					}
-				}
+				walk.MsgBox(dlg, "Основной блок", strings.Join(model.Statuses, "\n"), walk.MsgBoxIconInformation)
 				return
 			}
 			b = p.Blocks[i]
@@ -152,25 +147,7 @@ func (a *App) openAdmin() {
 		Composite{Layout: HBox{}, Children: []Widget{Label{Text: "Одновременно активных заданий (1–20):"}, NumberEdit{AssignTo: &parallel, Value: float64(working.Parallel), MinValue: 1, MaxValue: float64(model.MaxParallel), Decimals: 0, MinSize: Size{Width: 100}}, HSpacer{}}},
 		Label{AssignTo: &cacheNote, Text: "Проверка общего кэша полей…"},
 		Label{Text: "Блоки"}, ListBox{AssignTo: &blocks, OnItemActivated: func() { edit(false) }},
-		Composite{Layout: HBox{}, Children: []Widget{PushButton{Text: "Добавить блок", OnClicked: func() { edit(true) }}, PushButton{Text: "Изменить блок", OnClicked: func() { edit(false) }}, PushButton{Text: "Ключи элементов", OnClicked: func() {
-			if busy {
-				return
-			}
-			p := &working.Profiles[index()]
-			i := blocks.CurrentIndex()
-			if i < 0 {
-				return
-			}
-			b := p.AllBlocks()[i]
-			if rules, ok := editElementKeys(dlg, b); ok {
-				if i == 0 {
-					p.PrimaryMatching = rules
-				} else {
-					p.Blocks[i-1].Matching = rules
-				}
-				repaint()
-			}
-		}}, PushButton{Text: "Удалить блок", OnClicked: func() {
+		Composite{Layout: HBox{}, Children: []Widget{PushButton{Text: "Добавить блок", OnClicked: func() { edit(true) }}, PushButton{Text: "Изменить блок", OnClicked: func() { edit(false) }}, PushButton{Text: "Удалить блок", OnClicked: func() {
 			if busy {
 				return
 			}

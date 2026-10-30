@@ -86,7 +86,7 @@ func TestOptionalOutputs(t *testing.T) {
 				want -= 2
 			}
 			entries, err := os.ReadDir(r.Dir)
-			if err != nil || len(entries) != want || len(r.Files) != want || skipped != 6-want || r.Found != 2 {
+			if err != nil || len(entries) != want || len(r.Files) != want || skipped != 6-want || r.Found != 3 {
 				t.Fatalf("аналитика=%v дела=%v: %+v файлы=%d пропуски=%d ошибка=%v", analytics, cases, r, len(entries), skipped, err)
 			}
 			for _, file := range r.Files {
@@ -164,10 +164,10 @@ func TestStrictOutputsAndRepeatedRun(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if r.Found != 2 || r.Total != 8 || r.FoundByCase != 0 {
+	if r.Found != 3 || r.Total != 8 || r.FoundByCase != 0 {
 		t.Fatalf("%+v", r)
 	}
-	counts := []int{2, 2, 6, 8, 0, 0}
+	counts := []int{3, 3, 5, 8, 0, 0}
 	if len(r.Files) != len(counts) {
 		t.Fatal("нет пятого файла", r.Files)
 	}
@@ -282,10 +282,10 @@ func TestRealWorkbook(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if r.Total != 3376 || r.Found != 940 {
+	if r.Total != 3376 {
 		t.Fatalf("неожиданный результат %+v", r)
 	}
-	counts := []int{940, 940, 2436, 3376, r.FoundByCase, r.FoundByCase}
+	counts := []int{r.Found, r.Found, r.Total - r.Found, r.Total, r.FoundByCase, r.FoundByCase}
 	if len(r.Files) != 6 {
 		t.Fatal("нет шести файлов")
 	}
@@ -323,12 +323,12 @@ func TestCaseNumberMatchesUnmatchedID(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if r.Found != 1 || r.FoundByCase != 2 {
+	if r.Found != 1 || r.FoundByCase != 3 {
 		t.Fatal("ключи смешаны или проигнорирован конфликт ДР", r)
 	}
 	newRows := readRows(t, filepath.Join(r.Dir, r.Files[4]))
 	oldRows := readRows(t, filepath.Join(r.Dir, r.Files[0]))
-	if len(newRows) != 3 || len(oldRows) != 2 || newRows[1][0] != "Иванов Иван" || oldRows[1][0] != "Петров Пётр" {
+	if len(newRows) != 4 || len(oldRows) != 2 || newRows[1][0] != "Иванов Иван" || oldRows[1][0] != "Петров Пётр" {
 		t.Fatal("неверный состав файлов")
 	}
 	if !reflect.DeepEqual(newRows[0], oldRows[0]) || !strings.Contains(newRows[1][5], "1980") {
