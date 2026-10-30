@@ -221,7 +221,7 @@ func Run(store *settings.Store, local, ready string, skipUpdate bool) error {
 	defer a.lifecycleCancel()
 	var separate *walk.Composite
 	var more *walk.PushButton
-	err := (MainWindow{AssignTo: &a.window, Title: "Реестры ФССП", Icon: appIcon(), MinSize: Size{Width: 360, Height: 330}, Size: Size{Width: 380, Height: 360}, Font: Font{Family: "Segoe UI", PointSize: 10}, Layout: HBox{Margins: Margins{Left: 20, Top: 16, Right: 20, Bottom: 16}, Spacing: 16}, Children: []Widget{Composite{MinSize: Size{Width: 320}, MaxSize: Size{Width: 320}, Layout: VBox{Spacing: 14}, Children: []Widget{
+	err := (MainWindow{AssignTo: &a.window, Title: "Реестры ФССП", Icon: appIcon(), MinSize: Size{Width: 360, Height: 330}, Size: Size{Width: 380, Height: 360}, Font: Font{Family: "Segoe UI", PointSize: 10}, Layout: HBox{Alignment: AlignHNearVNear, Margins: Margins{Left: 20, Top: 16, Right: 20, Bottom: 16}, Spacing: 16}, Children: []Widget{Composite{Alignment: AlignHNearVNear, MinSize: Size{Width: 320}, MaxSize: Size{Width: 320}, Layout: VBox{Spacing: 14}, Children: []Widget{
 		Label{Text: "Реестры ФССП", Font: Font{Family: "Segoe UI", PointSize: 20, Bold: true}},
 		Label{Text: "Выберите исходный файл и период."},
 		ComboBox{AssignTo: &a.profiles, Visible: false},
@@ -250,7 +250,9 @@ func Run(store *settings.Store, local, ready string, skipUpdate bool) error {
 		Composite{AssignTo: &a.statusPlaceholder, StretchFactor: 1, Layout: VBox{}, Children: []Widget{
 			Label{Text: "Состояние выполнения", Font: Font{Family: "Segoe UI", PointSize: 14, Bold: true}},
 			Label{Text: "Выберите исходный файл и период. Здесь появятся этапы выгрузки и создания реестров."},
-			VSpacer{},
+			TableView{Model: &statusModel{mixed: true}, StretchFactor: 1, MinSize: Size{Width: 800, Height: 480}, Font: Font{Family: "Segoe UI", PointSize: 9}, LastColumnStretched: true, ColumnsSizable: true, Columns: []TableViewColumn{
+				{Title: "№", Width: 35}, {Title: "Этап", Width: 400}, {Title: "Состояние", Width: 120}, {Title: "Подробности", Width: 800},
+			}},
 		}},
 	}}}}).Create()
 	if err != nil {
