@@ -175,19 +175,24 @@ func (a *App) startRegisters() {
 				walk.MsgBox(a.window, "Настройки создания реестров", warning, walk.MsgBoxIconWarning)
 			})
 		}
+		a.window.Synchronize(func() { op.model.filterStages(opt, 0); op.model.PublishRowsReset() })
 		result, runErr := registry.Run(ctx, opt, func(e registry.Event) {
 			a.window.Synchronize(func() {
 				op.model.stages[e.Stage] = e
-				op.model.PublishRowChanged(e.Stage)
+				row := op.model.stageRow(e.Stage)
+				if row < 0 {
+					return
+				}
+				op.model.PublishRowChanged(row)
 				op.status.SetText(e.Detail)
 				progress := 0
 				if e.Stage == 0 && e.Total > 0 {
 					progress = e.Checked * 60 / e.Total
 				} else if e.Stage > 0 {
-					steps := len(registry.StageNames) - 1
-					progress = 60 + (e.Stage-1)*40/steps
+					steps := op.model.stageCount() - 1
+					progress = 60 + (row-1)*40/steps
 					if e.State == "Сохранён" {
-						progress = 60 + e.Stage*40/steps
+						progress = 60 + row*40/steps
 					}
 				}
 				op.progress.SetValue(max(op.progress.Value(), progress))
@@ -219,10 +224,13 @@ func (a *App) startRegisters() {
 			} else {
 				a.registerOutput = result.Dir
 				op.progress.SetValue(100)
-				message := fmt.Sprintf("Сохранено файлов: %d. Проверено %d/%d. Д.р. по ИД: %d, по делу: %d. Без д.р. по ИД: %d.", len(result.Files), result.Total, result.Total, result.Found, result.FoundByCase, result.Total-result.Found)
+				message := fmt.Sprintf("Сохранено файлов: %d. Проверено %d/%d. %s. Без д.р. по ИД: %d.", len(result.Files), result.Total, result.Total, registry.BirthSummary(result.Found, result.FoundByCase, opt.SkipCaseRegisters), result.Total-result.Found)
 				op.status.SetText(message)
 				a.status.SetText("Реестры созданы")
 				a.notify("Реестры созданы", message)
+				if err := platform.OpenFolder(result.Dir); err != nil {
+					a.error(err)
+				}
 			}
 			a.enable()
 			if a.closing {

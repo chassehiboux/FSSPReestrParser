@@ -42,6 +42,15 @@ type Options struct {
 	OutputDir   string
 	ExportFiles []string
 }
+
+func BirthSummary(found, byCase int, skipCase bool) string {
+	text := fmt.Sprintf("Д.р. по ИД: %d", found)
+	if !skipCase {
+		text += fmt.Sprintf(", по делу: %d", byCase)
+	}
+	return text
+}
+
 type Event struct {
 	Stage                 int
 	State, Detail         string
@@ -484,10 +493,10 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 			result.FoundByCase++
 		}
 		if i%100 == 0 || i+1 == len(rows) {
-			send("Выполняется", fmt.Sprintf("Проверено %d/%d, Найдено д.р.: по ИД %d, по делу %d", i+1, len(rows), result.Found, result.FoundByCase), i+1, len(rows), result.Found)
+			send("Выполняется", fmt.Sprintf("Проверено %d/%d. %s", i+1, len(rows), BirthSummary(result.Found, result.FoundByCase, opt.SkipCaseRegisters)), i+1, len(rows), result.Found)
 		}
 	}
-	send("Готово", fmt.Sprintf("Проверено %d/%d, Найдено д.р.: по ИД %d, по делу %d", len(rows), len(rows), result.Found, result.FoundByCase), len(rows), len(rows), result.Found)
+	send("Готово", fmt.Sprintf("Проверено %d/%d. %s", len(rows), len(rows), BirthSummary(result.Found, result.FoundByCase, opt.SkipCaseRegisters)), len(rows), len(rows), result.Found)
 	// Полный комплект готовится вне папки результата: в ней не бывает частично записанных XLSX.
 	tmp, err := os.MkdirTemp("", "fssp-registers-")
 	if err != nil {

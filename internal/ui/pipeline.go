@@ -75,6 +75,11 @@ func (a *App) startPipeline() {
 		for i := range pipeline.StageNames {
 			op.model.stages = append(op.model.stages, registry.Event{Stage: i, State: "Ожидание"})
 		}
+		initial := registry.Options{SkipAnalytics: a.cfg.SkipAnalytics, SkipCaseRegisters: a.cfg.SkipCaseRegisters}
+		if snapshot != nil {
+			initial = snapshot.Registry
+		}
+		op.model.filterStages(initial, 1)
 		op.model.PublishRowsReset()
 		a.showOperation(op)
 		op.status.SetText("Подготовка общего запуска…")
@@ -112,10 +117,13 @@ func (a *App) startPipeline() {
 						}
 					} else {
 						op.progress.SetValue(100)
-						message := fmt.Sprintf("Готово. Файлов реестров: %d. Проверено %d/%d. Д.р. по ИД: %d, по делу: %d.", len(result.Files), result.Total, result.Total, result.Found, result.FoundByCase)
+						message := fmt.Sprintf("Готово. Файлов реестров: %d. Проверено %d/%d. %s.", len(result.Files), result.Total, result.Total, registry.BirthSummary(result.Found, result.FoundByCase, snapshot.Registry.SkipCaseRegisters))
 						op.status.SetText(message)
 						a.status.SetText("Выгрузка и реестры созданы")
 						a.notify("Выгрузка и реестры созданы", message)
+						if err := platform.OpenFolder(result.Dir); err != nil {
+							a.error(err)
+						}
 					}
 					a.enable()
 					if a.closing {
@@ -159,6 +167,7 @@ func (a *App) startPipeline() {
 			result, err := runner.Run(ctx, *snapshot, func(ev pipeline.Event) {
 				a.window.Synchronize(func() {
 					if ev.Plan != nil {
+						op.model.filterStages(snapshot.Registry, 1)
 						dir = ev.Plan.Dir
 						op.model.jobs, op.model.events = ev.Plan.Jobs, map[string]queue.Event{}
 						for _, j := range ev.Plan.Jobs {
@@ -190,12 +199,16 @@ func (a *App) startPipeline() {
 					} else if ev.Stage != nil {
 						e := *ev.Stage
 						op.model.stages[e.Stage] = e
-						op.model.PublishRowChanged(len(op.model.jobs) + e.Stage)
+						row := op.model.stageRow(e.Stage)
+						if row < 0 {
+							return
+						}
+						op.model.PublishRowChanged(len(op.model.jobs) + row)
 						progress := 60
 						if e.Stage == 0 && e.Total > 0 {
 							progress += e.Checked * 10 / e.Total
 						} else if e.Stage > 0 {
-							progress = 70 + (e.Stage-1)*30/(len(pipeline.StageNames)-1)
+							progress = 70 + (row-1)*30/(op.model.stageCount()-1)
 						}
 						op.progress.SetValue(max(op.progress.Value(), progress))
 						op.status.SetText(e.Detail)

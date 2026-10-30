@@ -35,6 +35,7 @@ func newOperation(a *App, title string, withTable bool, openFolder func(), stage
 	op := &operation{model: &statusModel{events: map[string]queue.Event{}}, withTable: withTable}
 	stageTable := len(stages) > 0 && stages[0]
 	if stageTable {
+		op.model.filterStages(registry.Options{SkipAnalytics: a.cfg.SkipAnalytics, SkipCaseRegisters: a.cfg.SkipCaseRegisters}, 0)
 		for i := range registry.StageNames {
 			op.model.stages = append(op.model.stages, registry.Event{Stage: i, State: "Ожидание"})
 		}

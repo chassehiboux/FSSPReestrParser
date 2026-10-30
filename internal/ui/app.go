@@ -23,19 +23,63 @@ import (
 
 type statusModel struct {
 	walk.TableModelBase
-	jobs       []model.Job
-	events     map[string]queue.Event
-	stages     []registry.Event
-	mixed      bool
-	stageNames []string
+	jobs         []model.Job
+	events       map[string]queue.Event
+	stages       []registry.Event
+	mixed        bool
+	stageNames   []string
+	hiddenStages map[int]bool
+}
+
+func (m *statusModel) filterStages(opt registry.Options, offset int) {
+	m.hiddenStages = map[int]bool{}
+	if opt.SkipAnalytics {
+		m.hiddenStages[4+offset] = true
+	}
+	if opt.SkipCaseRegisters {
+		m.hiddenStages[5+offset] = true
+		m.hiddenStages[6+offset] = true
+	}
+}
+func (m *statusModel) stageRow(stage int) int {
+	if m.hiddenStages[stage] {
+		return -1
+	}
+	row := 0
+	for i := 0; i < stage; i++ {
+		if !m.hiddenStages[i] {
+			row++
+		}
+	}
+	return row
+}
+func (m *statusModel) stageIndex(row int) int {
+	for i := range m.stages {
+		if !m.hiddenStages[i] {
+			if row == 0 {
+				return i
+			}
+			row--
+		}
+	}
+	return -1
+}
+func (m *statusModel) stageCount() int {
+	n := 0
+	for i := range m.stages {
+		if !m.hiddenStages[i] {
+			n++
+		}
+	}
+	return n
 }
 
 func (m *statusModel) RowCount() int {
 	if m.mixed {
-		return len(m.jobs) + len(m.stages)
+		return len(m.jobs) + m.stageCount()
 	}
 	if m.stages != nil {
-		return len(m.stages)
+		return m.stageCount()
 	}
 	return len(m.jobs)
 }
@@ -63,7 +107,7 @@ func (m *statusModel) Value(row, col int) any {
 			}
 			return ""
 		}
-		i := row - len(m.jobs)
+		i := m.stageIndex(row - len(m.jobs))
 		e := m.stages[i]
 		switch col {
 		case 0:
@@ -78,12 +122,13 @@ func (m *statusModel) Value(row, col int) any {
 		return ""
 	}
 	if m.stages != nil {
-		e := m.stages[row]
+		i := m.stageIndex(row)
+		e := m.stages[i]
 		switch col {
 		case 0:
 			return row + 1
 		case 1:
-			return registry.StageNames[row]
+			return registry.StageNames[i]
 		case 2:
 			return e.State
 		case 3:
@@ -125,8 +170,8 @@ func (m *statusModel) stageState(row int) string {
 		}
 		row -= len(m.jobs)
 	}
-	if row < len(m.stages) {
-		return m.stages[row].State
+	if i := m.stageIndex(row); i >= 0 {
+		return m.stages[i].State
 	}
 	return ""
 }
