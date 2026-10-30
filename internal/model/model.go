@@ -41,19 +41,27 @@ type Row struct {
 	Key    string   `json:"key"`
 	Values []string `json:"values"`
 }
+type MatchPair struct {
+	Source     string `json:"source"`
+	Export     string `json:"export"`
+	IgnoreCase bool   `json:"ignore_case,omitempty"`
+}
+
 type Block struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Enabled bool   `json:"enabled"`
-	Linked  bool   `json:"linked"`
-	Rows    []Row  `json:"rows"`
+	Matching map[string][]MatchPair `json:"matching,omitempty"`
+	ID       string                 `json:"id"`
+	Name     string                 `json:"name"`
+	Enabled  bool                   `json:"enabled"`
+	Linked   bool                   `json:"linked"`
+	Rows     []Row                  `json:"rows"`
 }
 type Profile struct {
-	ID          string       `json:"id"`
-	Name        string       `json:"name"`
-	Bases       []Base       `json:"bases"`
-	Departments []Department `json:"departments"`
-	Blocks      []Block      `json:"blocks"`
+	PrimaryMatching map[string][]MatchPair `json:"primary_matching,omitempty"`
+	ID              string                 `json:"id"`
+	Name            string                 `json:"name"`
+	Bases           []Base                 `json:"bases"`
+	Departments     []Department           `json:"departments"`
+	Blocks          []Block                `json:"blocks"`
 }
 type Settings struct {
 	Schema            int       `json:"schema"`
@@ -70,6 +78,7 @@ type Condition struct {
 	Label string
 }
 type Job struct {
+	Matching        []MatchPair
 	ReplaceExisting bool
 	ID              string
 	Block           string
@@ -115,12 +124,17 @@ func (s Settings) Validate() error {
 			}
 			deps[Scope(d)] = true
 		}
-		blocks := map[string]bool{"primary": true}
-		for _, b := range p.Blocks {
+		blocks := map[string]bool{}
+		for _, b := range p.AllBlocks() {
 			if b.ID == "" || blocks[b.ID] || strings.TrimSpace(b.Name) == "" {
 				return fmt.Errorf("Некорректное имя или ID блока: %s", b.Name)
 			}
 			blocks[b.ID] = true
+			for _, pairs := range b.Matching {
+				if err := ValidateMatching(pairs); err != nil {
+					return fmt.Errorf("Блок «%s»: %w", b.Name, err)
+				}
+			}
 			if !b.Enabled {
 				continue
 			}
@@ -149,7 +163,7 @@ func BuildJobs(p Profile) ([]Job, error) {
 	var jobs []Job
 	seen := map[string]bool{}
 	names := map[string]int{}
-	blocks := append([]Block{Primary()}, p.Blocks...)
+	blocks := p.AllBlocks()
 	for _, b := range blocks {
 		if !b.Enabled {
 			continue
@@ -206,7 +220,11 @@ func BuildJobs(p Profile) ([]Job, error) {
 					identityConditions[c.Key] = c.Value
 					parts = append(parts, c.Label)
 				}
+				pairs := MatchingFor(b, cs)
 				raw, _ := json.Marshal([]any{base.ID, d.ID, identityConditions})
+				if len(b.Matching) > 0 {
+					raw, _ = json.Marshal([]any{base.ID, d.ID, identityConditions, pairs})
+				}
 				sum := sha256.Sum256(raw)
 				id := hex.EncodeToString(sum[:])
 				if seen[id] {
@@ -218,7 +236,7 @@ func BuildJobs(p Profile) ([]Job, error) {
 				if len(utf16.Encode([]rune(name))) > 240 {
 					return nil, fmt.Errorf("Слишком длинное имя: %s. Сократите значения или число связанных полей", name)
 				}
-				jobs = append(jobs, Job{ID: id, Block: b.Name, Base: base, Department: d, Conditions: cs, Filename: name + ".xlsx"})
+				jobs = append(jobs, Job{Matching: pairs, ID: id, Block: b.Name, Base: base, Department: d, Conditions: cs, Filename: name + ".xlsx"})
 				if len(jobs) > 30000 {
 					return nil, fmt.Errorf("Слишком много заданий; сократите выбор")
 				}

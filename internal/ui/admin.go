@@ -95,7 +95,7 @@ func (a *App) openAdmin() {
 			return
 		}
 		names := []string{}
-		for _, b := range working.Profiles[index()].Blocks {
+		for _, b := range working.Profiles[index()].AllBlocks() {
 			state := "выключен"
 			if b.Enabled {
 				state = "включён"
@@ -110,7 +110,7 @@ func (a *App) openAdmin() {
 		if err != nil {
 			note.SetText(err.Error())
 		} else {
-			note.SetText(fmt.Sprintf("Основной блок: 12 заданий для текущих трёх департаментов. Всего в регионе: %d заданий.", len(jobs)))
+			note.SetText(fmt.Sprintf("Всего в регионе: %d заданий.", len(jobs)))
 		}
 	}
 	edit := func(add bool) {
@@ -118,12 +118,18 @@ func (a *App) openAdmin() {
 			return
 		}
 		p := &working.Profiles[index()]
-		i := blocks.CurrentIndex()
+		i := blocks.CurrentIndex() - 1
 		var b model.Block
 		if add {
-			b = model.Block{ID: fmt.Sprintf("block-%d", time.Now().UnixNano()), Name: fmt.Sprintf("Дополнительный блок %d", len(p.Blocks)+1), Enabled: true}
+			b = model.Block{ID: fmt.Sprintf("block-%d", time.Now().UnixNano()), Name: fmt.Sprintf("Блок %d", len(p.Blocks)+1), Enabled: true}
 		} else {
 			if i < 0 {
+				if blocks.CurrentIndex() == 0 {
+					if rules, ok := editElementKeys(dlg, p.AllBlocks()[0]); ok {
+						p.PrimaryMatching = rules
+						repaint()
+					}
+				}
 				return
 			}
 			b = p.Blocks[i]
@@ -144,14 +150,31 @@ func (a *App) openAdmin() {
 		CheckBox{AssignTo: &analytics, Text: "Создавать файл аналитики", Checked: !working.SkipAnalytics},
 		CheckBox{AssignTo: &byCase, Text: "Создавать дополнительные реестры _по_делу (возбуждение и окончание)", Checked: !working.SkipCaseRegisters},
 		Composite{Layout: HBox{}, Children: []Widget{Label{Text: "Одновременно активных заданий (1–20):"}, NumberEdit{AssignTo: &parallel, Value: float64(working.Parallel), MinValue: 1, MaxValue: float64(model.MaxParallel), Decimals: 0, MinSize: Size{Width: 100}}, HSpacer{}}},
-		GroupBox{Title: "Основной блок — всегда включён", Layout: VBox{}, Children: []Widget{Label{Text: strings.Join(model.Statuses, "\n")}}},
 		Label{AssignTo: &cacheNote, Text: "Проверка общего кэша полей…"},
-		Label{Text: "Дополнительные блоки"}, ListBox{AssignTo: &blocks, OnItemActivated: func() { edit(false) }},
-		Composite{Layout: HBox{}, Children: []Widget{PushButton{Text: "Добавить блок", OnClicked: func() { edit(true) }}, PushButton{Text: "Изменить блок", OnClicked: func() { edit(false) }}, PushButton{Text: "Удалить блок", OnClicked: func() {
+		Label{Text: "Блоки"}, ListBox{AssignTo: &blocks, OnItemActivated: func() { edit(false) }},
+		Composite{Layout: HBox{}, Children: []Widget{PushButton{Text: "Добавить блок", OnClicked: func() { edit(true) }}, PushButton{Text: "Изменить блок", OnClicked: func() { edit(false) }}, PushButton{Text: "Ключи элементов", OnClicked: func() {
 			if busy {
 				return
 			}
+			p := &working.Profiles[index()]
 			i := blocks.CurrentIndex()
+			if i < 0 {
+				return
+			}
+			b := p.AllBlocks()[i]
+			if rules, ok := editElementKeys(dlg, b); ok {
+				if i == 0 {
+					p.PrimaryMatching = rules
+				} else {
+					p.Blocks[i-1].Matching = rules
+				}
+				repaint()
+			}
+		}}, PushButton{Text: "Удалить блок", OnClicked: func() {
+			if busy {
+				return
+			}
+			i := blocks.CurrentIndex() - 1
 			p := &working.Profiles[index()]
 			if i >= 0 && walk.MsgBox(dlg, "Удаление блока", "Удалить выбранный дополнительный блок?", walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) == walk.DlgCmdYes {
 				p.Blocks = append(p.Blocks[:i], p.Blocks[i+1:]...)

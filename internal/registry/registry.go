@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/chassehiboux/FSSPReestrParser/internal/model"
 	"github.com/xuri/excelize/v2"
 )
 
@@ -39,8 +40,9 @@ type Options struct {
 	Year                             int
 	SkipAnalytics, SkipCaseRegisters bool
 	// Параметры общего запуска. nil ExportFiles означает прежний выбор всей папки.
-	OutputDir   string
-	ExportFiles []string
+	OutputDir    string
+	ExportFiles  []string
+	FileMatching map[string][]model.MatchPair
 }
 
 func BirthSummary(found, byCase int, skipCase bool) string {
@@ -339,15 +341,27 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 	var sourceHeaders []value
 	var sourceCols map[string]int
 	rows := []record{}
-	wanted := map[key]*birthInfo{}
+	for _, pairs := range opt.FileMatching {
+		if len(pairs) > 0 {
+			if e := model.ValidateMatching(pairs); e != nil {
+				return result, e
+			}
+		}
+	}
+	matcher := newConfiguredMatcher(opt.FileMatching)
 	wantedByCase := map[key]*birthInfo{}
-	sourceKeys := []string{"Должник", "Номер ИД", "Сумма долга", "Взыскатель"}
 	sourceCaseKeys := []string{"Должник", "Номер дела", "Сумма долга", "Взыскатель"}
 	exportCaseKeys := []string{"ФИО", "Номер дела", "Переданная на принудительное исполнение сумма", "Взыскатель"}
 	err = scanBook(ctx, sourcePath, func(_ int, row []value, date1904 bool) error {
 		if sourceCols == nil {
 			var e error
-			sourceCols, e = headers(row, SourceFields)
+			required := append([]string(nil), SourceFields...)
+			for _, p := range matcher.policies {
+				for _, pair := range p.pairs {
+					required = append(required, pair.Source)
+				}
+			}
+			sourceCols, e = headers(row, required)
 			sourceHeaders = append([]value(nil), row...)
 			return e
 		}
@@ -375,12 +389,10 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 				}
 			}
 		}
-		rows = append(rows, record{Values: row})
-		if k, ok := makeKey(row, sourceCols, sourceKeys); ok {
-			if wanted[k] == nil {
-				wanted[k] = &birthInfo{Dates: map[string]time.Time{}}
-			}
+		if err := matcher.addSource(row, sourceCols); err != nil {
+			return err
 		}
+		rows = append(rows, record{Values: row})
 		if k, ok := makeKey(row, sourceCols, sourceCaseKeys); !opt.SkipCaseRegisters && ok && wantedByCase[k] == nil {
 			wantedByCase[k] = &birthInfo{Dates: map[string]time.Time{}}
 		}
@@ -426,12 +438,17 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 			return result, e
 		}
 		var cols map[string]int
+		policy := matcher.policy(filepath.Base(file))
 		e = scanBook(ctx, file, func(_ int, row []value, date1904 bool) error {
 			if cols == nil {
 				var e error
 				required := exportFields
 				if opt.SkipCaseRegisters {
 					required = exportFields[:5]
+				}
+				required = append([]string{"д.р."}, policy.exportNames()...)
+				if !opt.SkipCaseRegisters {
+					required = append(required, exportCaseKeys...)
 				}
 				cols, e = headers(row, required)
 				return e
@@ -451,9 +468,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 				reportRead()
 			}
 			v := at(row, cols["д.р."])
-			if k, ok := makeKey(row, cols, exportFields[:4]); ok && wanted[k] != nil {
-				wanted[k].add(v, date1904)
-			}
+			policy.addExport(row, cols, v, date1904)
 			if k, ok := makeKey(row, cols, exportCaseKeys); !opt.SkipCaseRegisters && ok && wantedByCase[k] != nil {
 				wantedByCase[k].add(v, date1904)
 			}
@@ -479,13 +494,14 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 			return result, err
 		}
 		r := &rows[i]
-		k, ok := makeKey(r.Values, sourceCols, sourceKeys)
-		r.Birthday, r.Status = resolveBirth(k, ok, wanted)
+		var k key
+		info, valid := matcher.resolve(i)
+		r.Birthday, r.Status = resolveBirth(k, valid, map[key]*birthInfo{k: info})
 		if !r.Birthday.IsZero() {
 			result.Found++
 		}
 		// Проверяем отсутствие самого совпадения ключа, а не только отсутствие найденной ДР.
-		if info := wanted[k]; !opt.SkipCaseRegisters && (!ok || info == nil || !info.Matched) {
+		if !opt.SkipCaseRegisters && (!valid || info == nil || !info.Matched) {
 			ck, cok := makeKey(r.Values, sourceCols, sourceCaseKeys)
 			r.CaseBirthday, _ = resolveBirth(ck, cok, wantedByCase)
 		}

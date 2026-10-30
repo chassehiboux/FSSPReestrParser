@@ -486,6 +486,10 @@ func (r Runner) Run(ctx context.Context, req Request, emit func(Event)) (out Res
 	}
 	stage("Готово", fmt.Sprintf("Проверены все %d отборов; можно создавать реестры", len(s.Jobs)), len(s.Jobs), len(s.Jobs))
 	opt := req.Registry
+	opt.FileMatching = map[string][]model.MatchPair{}
+	for _, job := range s.Jobs {
+		opt.FileMatching[job.Filename] = job.Matching
+	}
 	opt.Source, opt.Exports, opt.OutputDir, opt.ExportFiles = filepath.Join(s.work, "source.xlsx"), target, s.Dir, files
 	// В незавершённом запуске могли остаться собственные файлы после аварии при публикации.
 	names, _ := registry.Names(opt.Month, opt.Year)
