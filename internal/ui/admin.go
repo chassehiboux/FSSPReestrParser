@@ -26,7 +26,7 @@ func (a *App) openAdmin() {
 	var profile *walk.ComboBox
 	var blocks *walk.ListBox
 	var headless *walk.CheckBox
-	var analytics, byCase *walk.CheckBox
+	var analytics *walk.CheckBox
 	var parallel *walk.NumberEdit
 	var save, refresh *walk.PushButton
 	var saveMine, useCommon *walk.PushButton
@@ -43,7 +43,6 @@ func (a *App) openAdmin() {
 		working.Headless = headless.Checked()
 		working.Parallel = int(parallel.Value())
 		working.SkipAnalytics = !analytics.Checked()
-		working.SkipCaseRegisters = !byCase.Checked()
 		if err := working.Validate(); err != nil {
 			walk.MsgBox(dlg, "Проверьте настройки", err.Error(), walk.MsgBoxIconWarning)
 			return
@@ -143,7 +142,6 @@ func (a *App) openAdmin() {
 		ComboBox{AssignTo: &profile, Model: profileNames, OnCurrentIndexChanged: repaint},
 		CheckBox{AssignTo: &headless, Text: "Скрывать браузер (headless)", Checked: working.Headless},
 		CheckBox{AssignTo: &analytics, Text: "Создавать файл аналитики", Checked: !working.SkipAnalytics},
-		CheckBox{AssignTo: &byCase, Text: "Создавать дополнительные реестры _по_делу (возбуждение и окончание)", Checked: !working.SkipCaseRegisters},
 		Composite{Layout: HBox{}, Children: []Widget{Label{Text: "Одновременно активных заданий (1–20):"}, NumberEdit{AssignTo: &parallel, Value: float64(working.Parallel), MinValue: 1, MaxValue: float64(model.MaxParallel), Decimals: 0, MinSize: Size{Width: 100}}, HSpacer{}}},
 		Label{AssignTo: &cacheNote, Text: "Проверка общего кэша полей…"},
 		Label{Text: "Блоки"}, ListBox{AssignTo: &blocks, OnItemActivated: func() { edit(false) }},

@@ -78,15 +78,12 @@ func TestOptionalOutputs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := 6
+			want := 4
 			if analytics {
 				want--
 			}
-			if cases {
-				want -= 2
-			}
 			entries, err := os.ReadDir(r.Dir)
-			if err != nil || len(entries) != want || len(r.Files) != want || skipped != 6-want || r.Found != 3 {
+			if err != nil || len(entries) != want || len(r.Files) != want || skipped != 4-want || r.Found != 3 {
 				t.Fatalf("аналитика=%v дела=%v: %+v файлы=%d пропуски=%d ошибка=%v", analytics, cases, r, len(entries), skipped, err)
 			}
 			for _, file := range r.Files {
@@ -167,7 +164,7 @@ func TestStrictOutputsAndRepeatedRun(t *testing.T) {
 	if r.Found != 3 || r.Total != 8 || r.FoundByCase != 0 {
 		t.Fatalf("%+v", r)
 	}
-	counts := []int{3, 3, 5, 8, 0, 0}
+	counts := []int{3, 3, 5, 8}
 	if len(r.Files) != len(counts) {
 		t.Fatal("нет пятого файла", r.Files)
 	}
@@ -176,7 +173,7 @@ func TestStrictOutputsAndRepeatedRun(t *testing.T) {
 		if len(rows)-1 != counts[i] {
 			t.Fatalf("%s: %d", name, len(rows)-1)
 		}
-		if i == 1 || i == 2 || i == 5 {
+		if i == 1 || i == 2 {
 			if !reflect.DeepEqual(rows[0], SourceFields) {
 				t.Fatal("изменён шаблон окончания", rows[0])
 			}
@@ -285,8 +282,8 @@ func TestRealWorkbook(t *testing.T) {
 	if r.Total != 3376 {
 		t.Fatalf("неожиданный результат %+v", r)
 	}
-	counts := []int{r.Found, r.Found, r.Total - r.Found, r.Total, r.FoundByCase, r.FoundByCase}
-	if len(r.Files) != 6 {
+	counts := []int{r.Found, r.Found, r.Total - r.Found, r.Total}
+	if len(r.Files) != 4 {
 		t.Fatal("нет шести файлов")
 	}
 	for i, n := range r.Files {
@@ -313,38 +310,41 @@ func TestCaseNumberMatchesUnmatchedID(t *testing.T) {
 		row("Иванов Иван", "другой ИД", "К-1", 100, "ао"),
 	})
 	fixture(t, filepath.Join(opt.Exports, "Выгрузка.xlsx"), exportFields, [][]any{
-		{"ИВАНОВ ИВАН", "ИД-1", 100, "АО", "01.01.1980", "К-1"},
-		{"Иванов Иван", "иной ИД", 100, "АО", "01.01.1980", "К-1"},
+		{"ИВАНОВ ИВАН", "К-1", 100, "АО", "01.01.1980", "К-1"},
+		{"Иванов Иван", "К-1", 100, "АО", "01.01.1980", "К-1"},
 		{"Петров Пётр", "ИД-2", 200, "АО", "02.01.1980", "К-2"},
-		{"Двойной Иван", "ИД-3", 300, "АО", "03.01.1980", "К-3"},
-		{"Двойной Иван", "ИД-4", 300, "АО", "04.01.1980", "К-3"},
+		{"Двойной Иван", "К-3", 300, "АО", "03.01.1980", "К-3"},
+		{"Двойной Иван", "К-3", 300, "АО", "04.01.1980", "К-3"},
 	})
 	r, e := Run(context.Background(), opt, nil)
 	if e != nil {
 		t.Fatal(e)
 	}
-	if r.Found != 1 || r.FoundByCase != 3 {
-		t.Fatal("ключи смешаны или проигнорирован конфликт ДР", r)
+	if r.Found != 4 || r.FoundByCase != 3 {
+		t.Fatal("Не объединены способы поиска", r)
 	}
-	newRows := readRows(t, filepath.Join(r.Dir, r.Files[4]))
-	oldRows := readRows(t, filepath.Join(r.Dir, r.Files[0]))
-	if len(newRows) != 4 || len(oldRows) != 2 || newRows[1][0] != "Иванов Иван" || oldRows[1][0] != "Петров Пётр" {
-		t.Fatal("неверный состав файлов")
+	names, _ := Names(opt.Month, opt.Year)
+	if len(r.Files) != 4 {
+		t.Fatal("Созданы лишние файлы", r.Files)
 	}
-	if !reflect.DeepEqual(newRows[0], oldRows[0]) || !strings.Contains(newRows[1][5], "1980") {
-		t.Fatal("изменён шаблон или отсутствует ДР")
+	main := readRows(t, filepath.Join(r.Dir, names[0]))
+	ending := readRows(t, filepath.Join(r.Dir, names[1]))
+	missing := readRows(t, filepath.Join(r.Dir, names[2]))
+	if len(main) != 5 || len(ending) != 5 || len(missing) != 5 {
+		t.Fatal("Неверный состав объединённых реестров")
 	}
-	if newRows[1][8] != "другой ИД" {
-		t.Fatal("номер ИД исходника заменён значением кандидата")
+	if main[1][0] != "Иванов Иван" || main[2][0] != "Петров Пётр" || main[1][8] != "другой ИД" {
+		t.Fatal("Нарушен порядок или заменён исходный номер ИД", main)
 	}
-	ending := readRows(t, filepath.Join(r.Dir, r.Files[5]))
-	if len(ending) != len(newRows) || !reflect.DeepEqual(ending[0], SourceFields) {
-		t.Fatal("неверный состав или шаблон дополнительного окончания")
+	if !reflect.DeepEqual(ending[0], SourceFields) {
+		t.Fatal("Изменён шаблон окончания")
 	}
-	for i := 1; i < len(ending); i++ {
-		if ending[i][2] != newRows[i][0] || ending[i][5] != newRows[i][8] {
-			t.Fatal("состав дополнительных реестров различается")
-		}
+	if !strings.Contains(main[1][5], "1980") {
+		t.Fatal("Не записана ДР второго поиска")
+	}
+	analytics := readRows(t, filepath.Join(r.Dir, names[3]))
+	if !strings.Contains(analytics[1][15], "номеру дела") {
+		t.Fatal("Потерян способ сопоставления", analytics[1])
 	}
 }
 
@@ -368,7 +368,7 @@ func TestOriginalMatchExcludesCaseEvenWithoutUsableBirth(t *testing.T) {
 			exports = append(exports, []any{name, id, amount, "АО", "02.01.1980", "ещё дело"})
 		}
 		// По делу дата единственная и корректная, но исходный ключ уже совпал.
-		exports = append(exports, []any{name, "иной ИД", amount, "АО", "01.01.1980", caseNumber})
+		exports = append(exports, []any{name, caseNumber, amount, "АО", "01.01.1980", caseNumber})
 	}
 	fixture(t, opt.Source, SourceFields, rows)
 	fixture(t, filepath.Join(opt.Exports, "Выгрузка.xlsx"), exportFields, exports)
@@ -379,11 +379,8 @@ func TestOriginalMatchExcludesCaseEvenWithoutUsableBirth(t *testing.T) {
 	if r.Found != 1 || r.FoundByCase != 0 {
 		t.Fatal("совпавшие исходные ключи ошибочно включены по делу", r)
 	}
-	if len(readRows(t, filepath.Join(r.Dir, r.Files[4]))) != 1 {
-		t.Fatal("пятый файл должен содержать только заголовок")
-	}
-	if len(readRows(t, filepath.Join(r.Dir, r.Files[5]))) != 1 {
-		t.Fatal("шестой файл должен содержать только заголовок")
+	if len(r.Files) != 4 {
+		t.Fatal("Созданы отдельные файлы по делу", r.Files)
 	}
 }
 

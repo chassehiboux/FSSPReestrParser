@@ -27,7 +27,7 @@ func TestParallelLimit(t *testing.T) {
 func TestPrimaryAndBlocks(t *testing.T) {
 	p := sample()
 	jobs, e := BuildJobs(p)
-	if e != nil || len(jobs) != 12 {
+	if e != nil || len(jobs) != 15 {
 		t.Fatalf("primary: %d %v", len(jobs), e)
 	}
 	for _, j := range jobs {
@@ -37,12 +37,12 @@ func TestPrimaryAndBlocks(t *testing.T) {
 	}
 	p.Blocks = []Block{{ID: "extra", Name: "Блок", Enabled: true, Rows: []Row{{Key: "a", Values: []string{"A", "B"}}, {Key: "b", Values: []string{"1", "2", "3"}}}}}
 	jobs, e = BuildJobs(p)
-	if e != nil || len(jobs) != 27 {
+	if e != nil || len(jobs) != 30 {
 		t.Fatalf("independent: %d %v", len(jobs), e)
 	}
 	p.Blocks[0].Linked = true
 	jobs, e = BuildJobs(p)
-	if e != nil || len(jobs) != 30 {
+	if e != nil || len(jobs) != 33 {
 		t.Fatalf("linked: %d %v", len(jobs), e)
 	}
 }
@@ -51,7 +51,7 @@ func TestIdentityDedupAndCollisions(t *testing.T) {
 	p.Departments = p.Departments[:1]
 	p.Blocks = []Block{{ID: "a", Name: "Блок", Enabled: true, Rows: []Row{{Key: "name", Values: []string{"x/y", "x:y", "x/y"}}}}}
 	jobs, e := BuildJobs(p)
-	if e != nil || len(jobs) != 6 {
+	if e != nil || len(jobs) != 7 {
 		t.Fatalf("%d %v", len(jobs), e)
 	}
 	seen := map[string]bool{}

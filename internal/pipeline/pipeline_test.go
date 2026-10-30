@@ -462,7 +462,7 @@ func TestRealPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Total != baseline.Total || out.Found != baseline.Found || out.FoundByCase != baseline.FoundByCase || out.ReadRows != baseline.ReadRows || len(out.Files) != 6 {
+	if out.Total != baseline.Total || out.Found != baseline.Found || out.FoundByCase != baseline.FoundByCase || out.ReadRows != baseline.ReadRows || len(out.Files) != 4 {
 		t.Fatalf("общий запуск отличается от отдельной сверки: %+v / %+v", out, baseline)
 	}
 	read := func(path string) [][]string {
@@ -482,5 +482,5 @@ func TestRealPipeline(t *testing.T) {
 			t.Fatal("изменилось содержимое реестра", name)
 		}
 	}
-	t.Logf("Реальный комплект: %s; строк %d, ДР по ИД %d, по делу %d; прочитано %d; записей %d; все 6 реестров совпали с отдельным запуском", out.Dir, out.Total, out.Found, out.FoundByCase, out.ReadRows, writes)
+	t.Logf("Реальный комплект: %s; строк %d, ДР по ИД %d, по делу %d; прочитано %d; записей %d; все 4 файла совпали с отдельным запуском", out.Dir, out.Total, out.Found, out.FoundByCase, out.ReadRows, writes)
 }

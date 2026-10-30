@@ -32,9 +32,6 @@ func TestDisabledStagesAreInvisible(t *testing.T) {
 				if analytics {
 					want--
 				}
-				if cases {
-					want -= 2
-				}
 				if m.RowCount() != want {
 					t.Fatal("неверное число видимых этапов")
 				}
@@ -54,10 +51,10 @@ func TestDisabledStagesAreInvisible(t *testing.T) {
 			}
 		}
 	}
-	if strings.Contains(registry.BirthSummary(5, 0, true), "делу") {
-		t.Fatal("отключённый поиск в итогах")
+	if registry.BirthSummary(5, 2, true) != registry.BirthSummary(5, 2, false) {
+		t.Fatal("Старый флаг отключил обязательный поиск")
 	}
-	if !strings.Contains(registry.BirthSummary(5, 0, false), "делу") {
-		t.Fatal("потерян включённый счётчик")
+	if !strings.Contains(registry.BirthSummary(5, 2, false), "по ИД: 3") {
+		t.Fatal("Неверная разбивка счётчиков")
 	}
 }

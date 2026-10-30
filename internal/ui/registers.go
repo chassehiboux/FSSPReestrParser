@@ -224,7 +224,7 @@ func (a *App) startRegisters() {
 			} else {
 				a.registerOutput = result.Dir
 				op.progress.SetValue(100)
-				message := fmt.Sprintf("Сохранено файлов: %d. Проверено %d/%d. %s. Без д.р. по ИД: %d.", len(result.Files), result.Total, result.Total, registry.BirthSummary(result.Found, result.FoundByCase, opt.SkipCaseRegisters), result.Total-result.Found)
+				message := fmt.Sprintf("Сохранено файлов: %d. Проверено %d/%d. %s. Без д.р.: %d.", len(result.Files), result.Total, result.Total, registry.BirthSummary(result.Found, result.FoundByCase, opt.SkipCaseRegisters), result.Total-result.Found)
 				op.status.SetText(message)
 				a.status.SetText("Реестры созданы")
 				a.notify("Реестры созданы", message)

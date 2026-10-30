@@ -29,26 +29,22 @@ var StageNames = []string{
 	"Создание реестра окончания по строкам с найденной д.р.",
 	"Создание реестра окончания по строкам без д.р.",
 	"Создание реестра аналитики по всем строкам исходного файла",
-	"Дополнительный реестр с д.р. по делу: без совпадения по ИД",
-	"Дополнительный реестр окончания по номеру дела",
 }
 
 type Options struct {
-	Source, Exports                  string
-	Month                            time.Month
-	Year                             int
-	SkipAnalytics, SkipCaseRegisters bool
+	Source, Exports string
+	Month           time.Month
+	Year            int
+	SkipAnalytics   bool
+	// Deprecated: прежний флаг не влияет на обязательный второй поиск и состав файлов.
+	SkipCaseRegisters bool
 	// Параметры общего запуска. nil ExportFiles означает прежний выбор всей папки.
 	OutputDir   string
 	ExportFiles []string
 }
 
-func BirthSummary(found, byCase int, skipCase bool) string {
-	text := fmt.Sprintf("Д.р. по ИД: %d", found)
-	if !skipCase {
-		text += fmt.Sprintf(", по делу: %d", byCase)
-	}
-	return text
+func BirthSummary(found, byCase int, _ bool) string {
+	return fmt.Sprintf("Д.р. найдено: %d (по ИД: %d, по номеру дела: %d)", found, found-byCase, byCase)
 }
 
 type Event struct {
@@ -66,10 +62,9 @@ type Result struct {
 	Files        []string
 }
 type record struct {
-	Values       []value
-	Birthday     time.Time
-	CaseBirthday time.Time
-	Status       string
+	Values   []value
+	Birthday time.Time
+	Status   string
 }
 type key [3]value
 type birthInfo struct {
@@ -149,7 +144,7 @@ func Names(month time.Month, year int) ([]string, error) {
 		return nil, fmt.Errorf("выберите корректные месяц и год")
 	}
 	prefix := []string{"Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"}[month-1] + fmt.Sprintf("%02d", year%100) + "_"
-	return []string{prefix + "Возб_Изв_Отк_С_ДР.xlsx", prefix + "Окон_Изв_Отказы_С_ДР.xlsx", prefix + "Окон_Изв_Отк_БЕЗ_ДР.xlsx", prefix + "Аналитика.xlsx", prefix + "Возб_С_ДР_по_делу.xlsx", prefix + "Окон_С_ДР_по_делу.xlsx"}, nil
+	return []string{prefix + "Возб_Изв_Отк_С_ДР.xlsx", prefix + "Окон_Изв_Отказы_С_ДР.xlsx", prefix + "Окон_Изв_Отк_БЕЗ_ДР.xlsx", prefix + "Аналитика.xlsx"}, nil
 }
 func reserve(parent string, names []string) (string, error) {
 	for i := 0; ; i++ {
@@ -184,7 +179,7 @@ func enabledNames(opt Options) ([]string, error) {
 	}
 	out := []string{}
 	for i, name := range names {
-		if !(i == 3 && opt.SkipAnalytics || i >= 4 && opt.SkipCaseRegisters) {
+		if !(i == 3 && opt.SkipAnalytics) {
 			out = append(out, name)
 		}
 	}
@@ -222,15 +217,12 @@ func CheckSource(ctx context.Context, path string) error {
 }
 
 // CheckExport не позволяет принять техническую книгу или пустую неподтверждённую выгрузку.
-func CheckExport(ctx context.Context, path string, skipCase bool) error {
+func CheckExport(ctx context.Context, path string, _ bool) error {
 	found, rows := false, 0
 	err := scanBook(ctx, path, func(_ int, row []value, _ bool) error {
 		if !found {
 			found = true
-			required := exportFields
-			if skipCase {
-				required = exportFields[:5]
-			}
+			required := []string{"ФИО", "Номер ИД", "Переданная на принудительное исполнение сумма", "д.р."}
 			_, err := headers(row, required)
 			return err
 		}
@@ -279,7 +271,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 	if strings.EqualFold(filepath.Dir(sourcePath), exportPath) {
 		return result, fmt.Errorf("исходный файл не должен находиться в выбранной папке выгрузки ОВЗИД")
 	}
-	enabled := func(kind int) bool { return !(kind == 3 && opt.SkipAnalytics || kind >= 4 && opt.SkipCaseRegisters) }
+	enabled := func(kind int) bool { return !(kind == 3 && opt.SkipAnalytics) }
 	outputNames := []string{}
 	for i, name := range names {
 		if enabled(i) {
@@ -343,7 +335,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 	wantedByCase := map[key]*birthInfo{}
 	sourceKeys := []string{"Должник", "Номер ИД", "Сумма долга"}
 	sourceCaseKeys := []string{"Должник", "Номер дела", "Сумма долга"}
-	exportCaseKeys := []string{"ФИО", "Номер дела", "Переданная на принудительное исполнение сумма"}
+	exportCaseKeys := exportFields[:3]
 	err = scanBook(ctx, sourcePath, func(_ int, row []value, date1904 bool) error {
 		if sourceCols == nil {
 			var e error
@@ -381,7 +373,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 				wanted[k] = &birthInfo{Dates: map[string]time.Time{}}
 			}
 		}
-		if k, ok := makeKey(row, sourceCols, sourceCaseKeys); !opt.SkipCaseRegisters && ok && wantedByCase[k] == nil {
+		if k, ok := makeKey(row, sourceCols, sourceCaseKeys); ok && wantedByCase[k] == nil {
 			wantedByCase[k] = &birthInfo{Dates: map[string]time.Time{}}
 		}
 		return nil
@@ -429,10 +421,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 		e = scanBook(ctx, file, func(_ int, row []value, date1904 bool) error {
 			if cols == nil {
 				var e error
-				required := exportFields
-				if opt.SkipCaseRegisters {
-					required = exportFields[:5]
-				}
+				required := []string{"ФИО", "Номер ИД", "Переданная на принудительное исполнение сумма", "д.р."}
 				cols, e = headers(row, required)
 				return e
 			}
@@ -454,7 +443,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 			if k, ok := makeKey(row, cols, exportFields[:3]); ok && wanted[k] != nil {
 				wanted[k].add(v, date1904)
 			}
-			if k, ok := makeKey(row, cols, exportCaseKeys); !opt.SkipCaseRegisters && ok && wantedByCase[k] != nil {
+			if k, ok := makeKey(row, cols, exportCaseKeys); ok && wantedByCase[k] != nil {
 				wantedByCase[k].add(v, date1904)
 			}
 			return nil
@@ -481,16 +470,19 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 		r := &rows[i]
 		k, ok := makeKey(r.Values, sourceCols, sourceKeys)
 		r.Birthday, r.Status = resolveBirth(k, ok, wanted)
+		// Проверяем отсутствие самого совпадения ключа, а не только отсутствие найденной ДР.
+		if info := wanted[k]; !ok || info == nil || !info.Matched {
+			ck, cok := makeKey(r.Values, sourceCols, sourceCaseKeys)
+			r.Birthday, r.Status = resolveBirth(ck, cok, wantedByCase)
+			if !r.Birthday.IsZero() {
+				result.FoundByCase++
+				r.Status = "Совпало по номеру дела исходника и номеру ИД выгрузки"
+			} else {
+				r.Status = "По номеру дела: " + r.Status
+			}
+		}
 		if !r.Birthday.IsZero() {
 			result.Found++
-		}
-		// Проверяем отсутствие самого совпадения ключа, а не только отсутствие найденной ДР.
-		if info := wanted[k]; !opt.SkipCaseRegisters && (!ok || info == nil || !info.Matched) {
-			ck, cok := makeKey(r.Values, sourceCols, sourceCaseKeys)
-			r.CaseBirthday, _ = resolveBirth(ck, cok, wantedByCase)
-		}
-		if !r.CaseBirthday.IsZero() {
-			result.FoundByCase++
 		}
 		if i%100 == 0 || i+1 == len(rows) {
 			send("Выполняется", fmt.Sprintf("Проверено %d/%d. %s", i+1, len(rows), BirthSummary(result.Found, result.FoundByCase, opt.SkipCaseRegisters)), i+1, len(rows), result.Found)
@@ -514,9 +506,6 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 			return result, err
 		}
 		detail := "Файл сформирован; ожидает сохранения комплекта"
-		if i >= 4 {
-			detail = fmt.Sprintf("Найдено д.р. по номеру дела: %d; ожидает сохранения комплекта", result.FoundByCase)
-		}
 		send("Подготовлен", detail, 0, len(rows), result.Found)
 	}
 	for _, name := range outputNames {
@@ -547,9 +536,9 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 func writeBook(ctx context.Context, dest string, kind int, sourceHeaders []value, cols map[string]int, rows []record) error {
 	var f *excelize.File
 	var err error
-	if kind == 0 || kind == 4 {
+	if kind == 0 {
 		f, err = excelize.OpenReader(bytes.NewReader(initiation))
-	} else if kind < 3 || kind == 5 {
+	} else if kind < 3 {
 		f, err = excelize.OpenReader(bytes.NewReader(termination))
 	} else {
 		f = excelize.NewFile()
@@ -625,10 +614,7 @@ func writeBook(ctx context.Context, dest string, kind int, sourceHeaders []value
 			return err
 		}
 		birth := r.Birthday
-		if kind >= 4 {
-			birth = r.CaseBirthday
-		}
-		if (kind < 2 || kind >= 4) && birth.IsZero() || kind == 2 && !birth.IsZero() {
+		if kind < 2 && birth.IsZero() || kind == 2 && !birth.IsZero() {
 			continue
 		}
 		for c, h := range outHeaders {

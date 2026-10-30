@@ -36,10 +36,6 @@ func (m *statusModel) filterStages(opt registry.Options, offset int) {
 	if opt.SkipAnalytics {
 		m.hiddenStages[4+offset] = true
 	}
-	if opt.SkipCaseRegisters {
-		m.hiddenStages[5+offset] = true
-		m.hiddenStages[6+offset] = true
-	}
 }
 func (m *statusModel) stageRow(stage int) int {
 	if m.hiddenStages[stage] {
