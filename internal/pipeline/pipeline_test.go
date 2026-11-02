@@ -130,7 +130,7 @@ func TestPublishesImmediatelyAndDeletesLocalCopy(t *testing.T) {
 		}
 		if ev.Export != nil && ev.Export.State == queue.Saved {
 			name := jobFilename(plan.Jobs, ev.Export.JobID)
-			if queue.ValidateXLSX(filepath.Join(plan.Dir, "Исх.", name)) != nil {
+			if queue.ValidateXLSX(filepath.Join(exportsDir(plan.Dir), name)) != nil {
 				t.Error("нет целевого файла при успешном статусе")
 			}
 			paths, _ := filepath.Glob(filepath.Join(local, "pipelines", "*", "exports", name))
@@ -273,7 +273,7 @@ func TestIncompleteExportNeverStartsRegistry(t *testing.T) {
 	}
 }
 
-func TestAllEmptyAndNewRunDoesNotOverwrite(t *testing.T) {
+func TestAllEmptyAndNewRunRequiresConfirmation(t *testing.T) {
 	req, local := request(t)
 	f := &fake{empty: true}
 	r := Runner{Local: local, Factory: f.factory, Delay: time.Nanosecond}
@@ -282,12 +282,12 @@ func TestAllEmptyAndNewRunDoesNotOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkOutputs(t, out, 0)
-	entries, err := os.ReadDir(filepath.Join(out.Dir, "Исх."))
+	entries, err := os.ReadDir(exportsDir(out.Dir))
 	if err != nil || len(entries) != 0 {
 		t.Fatal("пустые отборы превратились в файлы", err)
 	}
-	out2, err := r.Run(context.Background(), req, nil)
-	if err != nil || out2.Dir == out.Dir {
+	_, err = r.Run(context.Background(), req, nil)
+	if err == nil {
 		t.Fatal("перезаписан готовый комплект", err)
 	}
 	checkOutputs(t, out, 0)
@@ -393,7 +393,7 @@ func TestLongPathUsesShortNamesAndNoServiceFilesInExports(t *testing.T) {
 	if !short {
 		t.Fatal("не сокращены длинные имена")
 	}
-	entries, err := os.ReadDir(filepath.Join(out.Dir, "Исх."))
+	entries, err := os.ReadDir(exportsDir(out.Dir))
 	if err != nil {
 		t.Fatal(err)
 	}

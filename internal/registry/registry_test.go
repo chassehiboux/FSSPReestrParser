@@ -83,9 +83,9 @@ func TestOptionalOutputs(t *testing.T) {
 				want--
 			}
 			entries, err := os.ReadDir(r.Dir)
-			expectedFound := 4
+			expectedFound := 5
 			if cases {
-				expectedFound = 3
+				expectedFound = 4
 			}
 			if err != nil || len(entries) != want || len(r.Files) != want || skipped != 4-want || r.Found != expectedFound {
 				t.Fatalf("аналитика=%v дела=%v: %+v файлы=%d пропуски=%d ошибка=%v", analytics, cases, r, len(entries), skipped, err)
@@ -165,10 +165,10 @@ func TestStrictOutputsAndRepeatedRun(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if r.Found != 4 || r.WithoutBirth != 1 || r.Total != 8 || r.FoundByCase != 0 {
+	if r.Found != 5 || r.WithoutBirth != 1 || r.Total != 8 || r.FoundByCase != 0 {
 		t.Fatalf("%+v", r)
 	}
-	counts := []int{4, 4, 4, 8}
+	counts := []int{5, 5, 3, 8}
 	if len(r.Files) != len(counts) {
 		t.Fatal("нет пятого файла", r.Files)
 	}

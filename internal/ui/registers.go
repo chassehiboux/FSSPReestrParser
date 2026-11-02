@@ -100,7 +100,7 @@ func chooseRegisters(owner walk.Form, presetSource ...string) (registry.Options,
 				validate()
 			}
 		}}}},
-		Label{Text: "Результат: новая подпапка «Сверка» рядом с исходным файлом. Прежние комплекты сохраняются."},
+		Label{Text: "Результат сохраняется в папку «Сверка» рядом с исходным файлом."},
 		Composite{Layout: HBox{}, Children: []Widget{HSpacer{}, PushButton{AssignTo: &ok, Text: "ОК", Enabled: false, OnClicked: func() {
 			result = registry.Options{Source: source.Text(), Exports: exports.Text(), Month: month, Year: int(year.Value())}
 			dlg.Accept()

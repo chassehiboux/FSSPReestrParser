@@ -157,7 +157,22 @@ func (a *App) startPipeline() {
 					}
 				})
 			}
-			runner := pipeline.Runner{Local: a.local, Factory: func(ctx context.Context, output string) (pipeline.Backend, error) {
+			runner := pipeline.Runner{Local: a.local, Confirm: func(existing pipeline.Existing) bool {
+				accepted := false
+				a.window.Synchronize(func() {
+					message := "Рядом с исходным файлом уже есть комплект от прежнего запуска или с другими настройками. Полностью повторить выгрузку ОВЗИД и создать реестры заново? Прежние реестры сохранятся до формирования новых."
+					switch existing.Kind {
+					case "complete":
+						message = "Рядом с исходным файлом уже имеются выгрузки ОВЗИД и готовые реестры. Повторно выгрузить файлы ОВЗИД и создать новые реестры по ним?"
+					case "partial":
+						message = fmt.Sprintf("Готово выгрузок: %d из %d. Довыгрузить недостающие (%d) и затем создать реестры?", existing.Ready, existing.Total, existing.Total-existing.Ready)
+					case "registers":
+						message = "Все необходимые выгрузки уже готовы. Создать реестры из этих файлов без повторного скачивания?"
+					}
+					accepted = walk.MsgBox(a.window, "Выгрузки и реестры уже существуют", message, walk.MsgBoxYesNo|walk.MsgBoxIconQuestion|walk.MsgBoxDefButton2) == walk.DlgCmdYes
+				})
+				return accepted
+			}, Factory: func(ctx context.Context, output string) (pipeline.Backend, error) {
 				engine, err := browser.New(ctx, a.local, output, snapshot.Headless, a.prompt)
 				if err == nil {
 					engine.SetSharedCatalog(settings.CatalogRoot(a.store.Shared))

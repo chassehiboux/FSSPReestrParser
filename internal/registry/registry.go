@@ -6,8 +6,10 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -129,9 +131,49 @@ func makeKey(row []value, cols map[string]int, names []string) (key, bool) {
 		}
 	}
 	if k[0].Kind == 's' {
-		k[0].Text = strings.ToLower(k[0].Text)
+		k[0].Text = strings.ReplaceAll(strings.ToLower(strings.Join(strings.Fields(k[0].Text), " ")), "ё", "е")
+	}
+	if k[1].Kind == 's' {
+		k[1].Text = strings.Join(strings.Fields(k[1].Text), " ")
 	}
 	return k, true
+}
+
+// decimalNear сравнивает десятичные представления без ошибки вычитания float64
+// на границе ровно одной копейки. Текстовые суммы остаются текстовыми.
+func decimalNear(a, b value) bool {
+	if a.Kind != 'n' || b.Kind != 'n' {
+		return a == b
+	}
+	x, ok := new(big.Rat).SetString(strconv.FormatFloat(a.Number, 'f', -1, 64))
+	if !ok {
+		return false
+	}
+	y, ok := new(big.Rat).SetString(strconv.FormatFloat(b.Number, 'f', -1, 64))
+	if !ok {
+		return false
+	}
+	x.Sub(x, y)
+	x.Abs(x)
+	return x.Cmp(big.NewRat(1, 100)) < 0
+}
+
+type keyPair [2]value
+
+func keyLookup(index map[key]*birthInfo) map[keyPair][]key {
+	lookup := map[keyPair][]key{}
+	for k := range index {
+		lookup[keyPair{k[0], k[1]}] = append(lookup[keyPair{k[0], k[1]}], k)
+	}
+	return lookup
+}
+
+func addMatches(k key, lookup map[keyPair][]key, index map[key]*birthInfo, birth value, date1904 bool) {
+	for _, candidate := range lookup[keyPair{k[0], k[1]}] {
+		if decimalNear(candidate[2], k[2]) {
+			index[candidate].add(birth, date1904)
+		}
+	}
 }
 func birthday(v value, date1904 bool) (time.Time, bool) {
 	var t time.Time
@@ -396,6 +438,7 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 		return result, fmt.Errorf("исходный файл пуст")
 	}
 	result.Total = len(rows)
+	lookup, caseLookup := keyLookup(wanted), keyLookup(wantedByCase)
 	exports := []string{}
 	if opt.ExportFiles == nil {
 		entries, e := os.ReadDir(exportPath)
@@ -451,11 +494,11 @@ func Run(ctx context.Context, opt Options, emit func(Event)) (result Result, err
 				reportRead()
 			}
 			v := at(row, cols["д.р."])
-			if k, ok := makeKey(row, cols, exportFields[:3]); ok && wanted[k] != nil {
-				wanted[k].add(v, date1904)
+			if k, ok := makeKey(row, cols, exportFields[:3]); ok {
+				addMatches(k, lookup, wanted, v, date1904)
 			}
-			if k, ok := makeKey(row, cols, exportCaseKeys); ok && wantedByCase[k] != nil {
-				wantedByCase[k].add(v, date1904)
+			if k, ok := makeKey(row, cols, exportCaseKeys); ok {
+				addMatches(k, caseLookup, wantedByCase, v, date1904)
 			}
 			return nil
 		})

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/chassehiboux/FSSPReestrParser/internal/model"
 	"github.com/chassehiboux/FSSPReestrParser/internal/queue"
@@ -53,9 +54,16 @@ type Result struct {
 type Runner struct {
 	Local   string
 	Factory func(context.Context, string) (Backend, error)
+	// Confirm вызывается под блокировкой перед продолжением или полной заменой.
+	Confirm func(Existing) bool
 	// Save и Delay позволяют проверить сбои диска без настоящего корпоративного сервера.
 	Save  func(string, string) error
 	Delay time.Duration
+}
+
+type Existing struct {
+	Kind         string // partial, registers, complete, changed
+	Ready, Total int
 }
 
 type entry struct{ State, SHA256 string }
@@ -66,6 +74,7 @@ type state struct {
 	Jobs           []model.Job
 	Entries        map[string]entry
 	Complete       bool
+	Outputs        map[string]string
 }
 type session struct {
 	state
@@ -106,7 +115,18 @@ func valid(ctx context.Context, path, hash string) bool {
 	return err == nil && actual == hash
 }
 func (s *session) save() error {
+	if err := settings.AtomicJSON(filepath.Join(s.Dir, ".fssp", "state.json"), s.state); err != nil {
+		return err
+	}
 	return settings.AtomicJSON(filepath.Join(s.work, "state.json"), s.state)
+}
+
+func hideFile(path string) {
+	if p, err := windows.UTF16PtrFromString(path); err == nil {
+		if attrs, err := windows.GetFileAttributes(p); err == nil {
+			windows.SetFileAttributes(p, attrs|windows.FILE_ATTRIBUTE_HIDDEN)
+		}
+	}
 }
 func (s *session) close() {
 	if s.lock != nil {
@@ -115,7 +135,7 @@ func (s *session) close() {
 	}
 }
 func (s *session) acquire() error {
-	f, err := os.OpenFile(filepath.Join(s.work, "run.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	f, err := os.OpenFile(filepath.Join(s.Dir, ".fssp", "run.lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return err
 	}
@@ -128,118 +148,164 @@ func (s *session) acquire() error {
 	return nil
 }
 
+func exportsDir(dir string) string { return filepath.Join(filepath.Dir(dir), "Исх.") }
+
 func (r Runner) open(ctx context.Context, req Request) (*session, bool, error) {
 	source, err := filepath.Abs(req.Registry.Source)
 	if err != nil {
 		return nil, false, err
 	}
 	req.Registry.Source = source
+	if err = registry.CheckSource(ctx, source); err != nil {
+		return nil, false, err
+	}
 	hash, err := digest(ctx, source)
 	if err != nil {
 		return nil, false, err
 	}
-	raw, _ := json.Marshal([]any{"id-then-source-case-empty-birth-v2", model.Primary(), req, hash})
+	raw, _ := json.Marshal([]any{"normalized-three-keys-v3", model.Primary(), req, hash})
 	sum := sha256.Sum256(raw)
 	signature := hex.EncodeToString(sum[:])
-	root := filepath.Join(r.Local, "pipelines")
-	if err = os.MkdirAll(root, 0700); err != nil {
-		return nil, false, err
-	}
-	dirs, err := os.ReadDir(root)
+	parent := filepath.Dir(source)
+	names, err := registry.Names(req.Registry.Month, req.Registry.Year)
 	if err != nil {
 		return nil, false, err
 	}
-	for _, dir := range dirs {
-		if !dir.IsDir() {
-			continue
+	for _, name := range names {
+		if len(utf16.Encode([]rune(filepath.Join(parent, "Сверка", name)))) > 218 {
+			return nil, false, fmt.Errorf("путь реестра длиннее 218 символов; перенесите исходник в папку с более коротким путём")
 		}
-		work := filepath.Join(root, dir.Name())
-		data, e := os.ReadFile(filepath.Join(work, "state.json"))
-		var st state
-		if e != nil || json.Unmarshal(data, &st) != nil || st.Schema != 1 || st.Signature != signature || st.Complete {
-			continue
-		}
-		if !strings.EqualFold(filepath.Dir(st.Dir), filepath.Dir(source)) || !strings.HasPrefix(filepath.Base(st.Dir), "Сверка") {
-			return nil, false, fmt.Errorf("некорректная папка сохранённого запуска")
-		}
-		s := &session{state: st, work: work}
-		if err = s.acquire(); err != nil {
-			return nil, false, err
-		}
-		// Повторное чтение под блокировкой исключает гонку с завершением другого процесса.
-		data, e = os.ReadFile(filepath.Join(work, "state.json"))
-		if e != nil || json.Unmarshal(data, &s.state) != nil {
-			s.close()
-			return nil, false, fmt.Errorf("не удалось прочитать сохранённый запуск")
-		}
-		if s.Complete {
-			s.close()
-			continue
-		}
-		if !valid(ctx, filepath.Join(work, "source.xlsx"), hash) {
-			s.close()
-			if ctx.Err() != nil {
-				return nil, false, ctx.Err()
-			}
-			return nil, false, fmt.Errorf("локальная копия исходника повреждена; сохранённый запуск: %s", work)
-		}
-		if s.Entries == nil {
-			s.Entries = map[string]entry{}
-		}
-		return s, true, nil
 	}
-	jobs, err := model.BuildJobs(req.Profile)
-	if err != nil {
+	parentHash := sha256.Sum256([]byte(strings.ToLower(parent)))
+	work := filepath.Join(r.Local, "pipelines", hex.EncodeToString(parentHash[:]))
+	if err = os.MkdirAll(filepath.Join(work, "exports"), 0700); err != nil {
 		return nil, false, err
 	}
-	if len(jobs) == 0 {
-		return nil, false, fmt.Errorf("нет заданий для выгрузки")
-	}
-	work, err := os.MkdirTemp(root, "run-")
-	if err != nil {
+	dir := filepath.Join(parent, "Сверка")
+	if err = os.MkdirAll(filepath.Join(dir, ".fssp"), 0700); err != nil {
 		return nil, false, err
 	}
-	s := &session{state: state{Schema: 1, Signature: signature, Request: req, Jobs: jobs, Entries: map[string]entry{}}, work: work}
+	hideFile(filepath.Join(dir, ".fssp"))
+	s := &session{state: state{Schema: 2, Dir: dir, Signature: signature, Request: req, Entries: map[string]entry{}}, work: work}
 	if err = s.acquire(); err != nil {
 		return nil, false, err
 	}
 	fail := func(e error) (*session, bool, error) { s.close(); return nil, false, e }
-	// Снимок исключает изменение исходника посреди длительной выгрузки.
-	if err = queue.SaveResult(source, filepath.Join(work, "source.xlsx"), false); err != nil {
+	data, readErr := os.ReadFile(filepath.Join(dir, ".fssp", "state.json"))
+	var previous state
+	known := readErr == nil && json.Unmarshal(data, &previous) == nil && previous.Schema == 2
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return fail(readErr)
+	}
+	same := known && previous.Signature == signature
+	resumed := false
+	if same {
+		if !strings.EqualFold(previous.Dir, dir) {
+			return fail(fmt.Errorf("некорректная папка сохранённого запуска"))
+		}
+		s.state = previous
+		if s.Entries == nil {
+			s.Entries = map[string]entry{}
+		}
+		ready := 0
+		for _, j := range s.Jobs {
+			e := s.Entries[j.ID]
+			if e.State == queue.Empty || e.State == queue.Saved && (valid(ctx, filepath.Join(exportsDir(dir), j.Filename), e.SHA256) || valid(ctx, filepath.Join(work, "exports", j.Filename), e.SHA256)) {
+				ready++
+			}
+		}
+		kind := "partial"
+		if ready == len(s.Jobs) {
+			kind = "registers"
+			if s.Complete && len(s.Outputs) > 0 {
+				kind = "complete"
+				for name, hash := range s.Outputs {
+					if !valid(ctx, filepath.Join(dir, name), hash) {
+						kind = "registers"
+						break
+					}
+				}
+			}
+		}
+		if err = ctx.Err(); err != nil {
+			return fail(err)
+		}
+		if r.Confirm != nil {
+			if !r.Confirm(Existing{Kind: kind, Ready: ready, Total: len(s.Jobs)}) {
+				return fail(context.Canceled)
+			}
+		} else if kind == "complete" {
+			return fail(fmt.Errorf("выгрузки и реестры уже готовы; требуется подтверждение полной повторной выгрузки"))
+		}
+		if kind == "complete" {
+			s.Entries = map[string]entry{}
+		} else {
+			resumed = true
+		}
+		s.Complete = false
+	} else {
+		entries, e := os.ReadDir(dir)
+		if e != nil {
+			return fail(e)
+		}
+		existing := known || len(entries) > 1 // блокировка уже создана
+		if ex, e := os.ReadDir(exportsDir(dir)); e == nil && len(ex) > 0 {
+			existing = true
+		} else if e != nil && !os.IsNotExist(e) {
+			return fail(e)
+		}
+		if existing {
+			if r.Confirm == nil {
+				return fail(fmt.Errorf("рядом с исходником уже есть другой комплект; требуется подтверждение полной повторной выгрузки"))
+			}
+			if !r.Confirm(Existing{Kind: "changed"}) {
+				return fail(context.Canceled)
+			}
+		}
+		s.Jobs, err = model.BuildJobs(req.Profile)
+		if err != nil {
+			return fail(err)
+		}
+		if len(s.Jobs) == 0 {
+			return fail(fmt.Errorf("нет заданий для выгрузки"))
+		}
+		if queue.CheckPaths(exportsDir(dir), s.Jobs) != nil || queue.CheckPaths(filepath.Join(work, "exports"), s.Jobs) != nil {
+			for i := range s.Jobs {
+				s.Jobs[i].Filename = fmt.Sprintf("%04d.xlsx", i+1)
+			}
+		}
+		// Список предыдущих результатов нужен для удаления устаревших файлов после успеха.
+		if known {
+			s.Outputs = previous.Outputs
+		}
+	}
+	if !resumed {
+		// Сброс локальных остатков не позволяет принять старый файл как новую выгрузку.
+		entries, e := os.ReadDir(filepath.Join(work, "exports"))
+		if e != nil {
+			return fail(e)
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.EqualFold(filepath.Ext(entry.Name()), ".xlsx") {
+				if e = os.Remove(filepath.Join(work, "exports", entry.Name())); e != nil {
+					return fail(e)
+				}
+			}
+		}
+	}
+	if err = queue.CheckPaths(exportsDir(dir), s.Jobs); err != nil {
+		return fail(err)
+	}
+	if err = queue.SaveResult(source, filepath.Join(work, "source.xlsx"), true); err != nil {
 		return fail(err)
 	}
 	if !valid(ctx, filepath.Join(work, "source.xlsx"), hash) {
-		if ctx.Err() != nil {
-			return fail(ctx.Err())
-		}
 		return fail(fmt.Errorf("исходник изменился во время чтения; повторите запуск"))
 	}
-	if err = registry.CheckSource(ctx, filepath.Join(work, "source.xlsx")); err != nil {
-		return fail(err)
-	}
-	s.Dir, err = registry.PrepareOutput(req.Registry)
-	if err != nil {
-		return fail(err)
-	}
-	// В длинных UNC-путях нужны короткие физические имена; условия остаются в таблице.
-	if queue.CheckPaths(filepath.Join(s.Dir, "Исх."), s.Jobs) != nil || queue.CheckPaths(filepath.Join(work, "exports"), s.Jobs) != nil {
-		for i := range s.Jobs {
-			s.Jobs[i].Filename = fmt.Sprintf("%04d.xlsx", i+1)
-		}
-	}
-	if err = queue.CheckPaths(filepath.Join(s.Dir, "Исх."), s.Jobs); err != nil {
-		os.Remove(s.Dir)
-		return fail(err)
-	}
-	if err = os.Mkdir(filepath.Join(work, "exports"), 0700); err != nil {
-		os.Remove(s.Dir)
-		return fail(err)
-	}
 	if err = s.save(); err != nil {
-		os.Remove(s.Dir)
 		return fail(err)
 	}
-	return s, false, nil
+	return s, resumed, nil
 }
 
 func (r Runner) wait(ctx context.Context, attempt int) error {
@@ -269,7 +335,7 @@ func (r Runner) Run(ctx context.Context, req Request, emit func(Event)) (out Res
 	}
 	emit(Event{Plan: &Plan{Jobs: s.Jobs, Dir: s.Dir, Resumed: resumed}})
 	localExports := filepath.Join(s.work, "exports")
-	target := filepath.Join(s.Dir, "Исх.")
+	target := exportsDir(s.Dir)
 	if err = os.MkdirAll(target, 0700); err != nil {
 		return out, err
 	}
@@ -398,7 +464,7 @@ func (r Runner) Run(ctx context.Context, req Request, emit func(Event)) (out Res
 				}
 			}
 			emit(Event{Export: &ev})
-			if ev.State == "Подготовлен" && transferErr == nil && ctx.Err() == nil {
+			if ev.State == "Подготовлен" && saveErr == nil && transferErr == nil && ctx.Err() == nil {
 				name := jobFilename(s.Jobs, ev.JobID)
 				if e := publish(name, s.Entries[ev.JobID].SHA256); e != nil {
 					transferErr = e
@@ -486,22 +552,58 @@ func (r Runner) Run(ctx context.Context, req Request, emit func(Event)) (out Res
 	}
 	stage("Готово", fmt.Sprintf("Проверены все %d отборов; можно создавать реестры", len(s.Jobs)), len(s.Jobs), len(s.Jobs))
 	opt := req.Registry
-	opt.Source, opt.Exports, opt.OutputDir, opt.ExportFiles = filepath.Join(s.work, "source.xlsx"), target, s.Dir, files
-	// В незавершённом запуске могли остаться собственные файлы после аварии при публикации.
-	names, _ := registry.Names(opt.Month, opt.Year)
-	for _, name := range names {
-		if err = os.Remove(filepath.Join(s.Dir, name)); err != nil && !os.IsNotExist(err) {
-			return out, err
-		}
-	}
-	result, err := registry.Run(ctx, opt, func(ev registry.Event) { ev.Stage++; emit(Event{Stage: &ev}) })
+	staging, err := os.MkdirTemp("", "fssp-ready-")
 	if err != nil {
 		return out, err
 	}
+	defer os.RemoveAll(staging)
+	opt.Source, opt.Exports, opt.OutputDir, opt.ExportFiles = filepath.Join(s.work, "source.xlsx"), target, staging, files
+	result, err := registry.Run(ctx, opt, func(ev registry.Event) {
+		ev.Stage++
+		if ev.State == "Сохранён" {
+			ev.State = "Подготовлен"
+			ev.Detail = "Сформирован; сохранение комплекта в «Сверка»…"
+		}
+		emit(Event{Stage: &ev})
+	})
+	if err != nil {
+		return out, err
+	}
+	outputs := map[string]string{}
+	for _, name := range result.Files {
+		if err = ctx.Err(); err != nil {
+			return out, err
+		}
+		hash, e := digest(ctx, filepath.Join(staging, name))
+		if e != nil {
+			return out, e
+		}
+		if err = queue.SaveResult(filepath.Join(staging, name), filepath.Join(s.Dir, name), true); err != nil {
+			return out, err
+		}
+		if !valid(ctx, filepath.Join(s.Dir, name), hash) {
+			return out, fmt.Errorf("не удалось проверить сохранённый реестр: %s", name)
+		}
+		outputs[name] = hash
+	}
+	for name := range s.Outputs {
+		if _, exists := outputs[name]; !exists && filepath.Base(name) == name {
+			if err = os.Remove(filepath.Join(s.Dir, name)); err != nil && !os.IsNotExist(err) {
+				return out, err
+			}
+		}
+	}
+	result.Dir = s.Dir
 	out.Result = result
-	s.Complete = true
+	s.Complete, s.Outputs = true, outputs
 	if err = s.save(); err != nil {
 		return out, fmt.Errorf("реестры сохранены, но состояние завершения не записано: %w", err)
+	}
+	names, _ := registry.Names(req.Registry.Month, req.Registry.Year)
+	for i, name := range names {
+		if _, exists := outputs[name]; exists {
+			emit(Event{Stage: &registry.Event{Stage: i + 2, State: "Сохранён", Detail: name}})
+		}
 	}
 	// Удаляем только известные собственные локальные копии. Журнал завершения остаётся.
 	for _, j := range s.Jobs {
